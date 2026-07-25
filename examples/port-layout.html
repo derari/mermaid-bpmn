@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How a port on Bottom changes the flattened layout</title>
+    <style>
+      body { font-family: 'trebuchet ms', system-ui, sans-serif; margin: 2rem; color: #222; }
+      h1 { font-size: 1.25rem; }
+      p.lead { max-width: 60rem; color: #444; }
+      .panels { display: flex; flex-wrap: wrap; gap: 2rem; margin-top: 1rem; }
+      .panel { border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.25rem; }
+      .panel h2 { font-size: 1rem; margin: 0 0 .25rem; }
+      .panel .cap { font-size: .85rem; color: #555; margin: .5rem 0 0; }
+      .cap b { color: #c62828; }
+      svg { display: block; background: #fafafa; border-radius: 4px; }
+      .legend { font-size: .8rem; color: #555; margin-top: 1rem; }
+      .legend span { display: inline-block; margin-right: 1.25rem; }
+      .sw { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; border-radius: 2px; margin-right: .3rem; }
+      code { background: #f0f0f0; padding: 0 .25rem; border-radius: 3px; }
+    </style>
+    <script type="importmap">
+      { "imports": { "elkjs/lib/elk.bundled.js": "https://esm.sh/elkjs@0.12/lib/elk.bundled.js" } }
+    </script>
+  </head>
+  <body>
+    <h1>How inserting <code>port(Bottom)</code> changes the flattened layout</h1>
+    <p class="lead">
+      Both diagrams are the <em>same</em> graph — <code>Big</code> flows <code>tb</code> and is
+      flattened with <code>INCLUDE_CHILDREN</code> (to route <code>A&nbsp;→&nbsp;S2</code>), sitting
+      next to sibling <code>Other</code> under an <code>lr</code> root. The only difference: the right
+      one adds an <b>EAST port on <code>Bottom</code></b> (<code>FIXED_SIDE</code>) plus the edge
+      <code>B&nbsp;→&nbsp;port</code>, exactly what a <code>depth:1</code> port chain would insert.
+      These are raw ELK layouts (no region-fill step), so what you see is purely how ELK places the nodes.
+    </p>
+
+    <div class="panels" id="panels"></div>
+
+    <p class="legend">
+      <span><span class="sw" style="background:#e3f2fd;border:1px solid #90caf9"></span>container</span>
+      <span><span class="sw" style="background:#fff;border:1px solid #999"></span>leaf (actor/storage)</span>
+      <span><span class="sw" style="background:#c62828"></span>port</span>
+      <span><span class="sw" style="background:#888"></span>edge A→S2 (flattened)</span>
+      <span><span class="sw" style="background:#1565c0"></span>edge B→port</span>
+    </p>
+
+    <script type="module">
+      import ELK from 'elkjs/lib/elk.bundled.js';
+      const elk = new ELK();
+
+      const NAME = { n0: 'Big', 'n0.0': 'Top', 'n0.1': 'Bottom', n1: 'Other',
+        'n0.0.0': 'A', 'n0.0.1': 'S', 'n0.1.0': 'B', 'n0.1.1': 'S2', 'n1.0': 'T' };
+
+      const opts = (dir, extra = {}) => ({
+        'elk.algorithm': 'layered', 'elk.direction': dir,
+        'elk.spacing.nodeNode': '24', 'elk.layered.spacing.nodeNodeBetweenLayers': '24',
+        'elk.padding': '[top=0,left=0,bottom=0,right=0]', ...extra,
+      });
+      const leaf = (id) => ({ id, width: 80, height: 44 });
+
+      // Faithful to the graph the renderer builds: A→S / B→S2 ordering edges are
+      // pruned (A, S2 carry the real A→S2 edge); Top→Bottom ordering kept.
+      function graph(withPort) {
+        const bottom = {
+          id: 'n0.1', layoutOptions: opts('DOWN', withPort ? { 'elk.portConstraints': 'FIXED_SIDE' } : {}),
+          children: [leaf('n0.1.0'), leaf('n0.1.1')], ports: [], edges: [],
+        };
+        if (withPort) {
+          bottom.ports.push({ id: 'port', width: 0, height: 0, layoutOptions: { 'elk.port.side': 'EAST' } });
+          bottom.edges.push({ id: 'b_port', sources: ['n0.1.0'], targets: ['port'] });
+        }
+        const top = { id: 'n0.0', layoutOptions: opts('DOWN'), children: [leaf('n0.0.0'), leaf('n0.0.1')], edges: [] };
+        const big = {
+          id: 'n0',
+          layoutOptions: opts('DOWN', { 'elk.padding': '[top=24,left=12,bottom=12,right=12]', 'elk.hierarchyHandling': 'INCLUDE_CHILDREN' }),
+          children: [top, bottom],
+          edges: [
+            { id: 'a_s2', sources: ['n0.0.0'], targets: ['n0.1.1'] },
+            { id: 'top_bottom', sources: ['n0.0'], targets: ['n0.1'] },
+          ],
+        };
+        const other = { id: 'n1', layoutOptions: opts('DOWN', { 'elk.padding': '[top=24,left=12,bottom=12,right=12]' }), children: [leaf('n1.0')], edges: [] };
+        return { id: 'root', layoutOptions: opts('RIGHT'), children: [big, other], edges: [{ id: 'big_other', sources: ['n0'], targets: ['n1'] }] };
+      }
+
+      const SVG = 'http://www.w3.org/2000/svg';
+      const el = (n, a) => { const e = document.createElementNS(SVG, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+      // Absolute boxes + port points, threading nested offsets.
+      function collect(node, ox, oy, boxes, ports) {
+        const x = ox + (node.x ?? 0), y = oy + (node.y ?? 0);
+        boxes[node.id] = { x, y, w: node.width ?? 0, h: node.height ?? 0, container: (node.children?.length ?? 0) > 0 };
+        for (const p of node.ports ?? []) ports[p.id] = { x: x + (p.x ?? 0), y: y + (p.y ?? 0) };
+        for (const c of node.children ?? []) collect(c, x, y, boxes, ports);
+      }
+
+      function render(laid) {
+        const boxes = {}, ports = {};
+        for (const c of laid.children) collect(c, 0, 0, boxes, ports);
+        const W = (laid.width ?? 0) + 20, H = (laid.height ?? 0) + 20;
+        const svg = el('svg', { width: W, height: H, viewBox: `-10 -10 ${W} ${H}` });
+
+        // Containers first (so leaves paint on top).
+        for (const id of Object.keys(boxes)) {
+          const b = boxes[id]; if (!b.container) continue;
+          svg.appendChild(el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 4, fill: '#e3f2fd', 'fill-opacity': .5, stroke: '#90caf9' }));
+          const t = el('text', { x: b.x + 6, y: b.y + 15, 'font-size': 12, fill: '#1565c0', 'font-weight': 'bold' });
+          t.textContent = NAME[id] ?? id; svg.appendChild(t); drawn.add(id);
+        }
+        // Edges (drawn between box centers / to the port).
+        const center = (id) => ({ x: boxes[id].x + boxes[id].w / 2, y: boxes[id].y + boxes[id].h / 2 });
+        const line = (a, b, color) => svg.appendChild(el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: color, 'stroke-width': 2 }));
+        line(center('n0.0.0'), center('n0.1.1'), '#888');           // A -> S2
+        if (ports.port) line(center('n0.1.0'), ports.port, '#1565c0'); // B -> port
+        // Leaves.
+        for (const id of Object.keys(boxes)) {
+          const b = boxes[id]; if (b.container) continue;
+          svg.appendChild(el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 4, fill: '#fff', stroke: '#999' }));
+          const t = el('text', { x: b.x + b.w / 2, y: b.y + b.h / 2 + 4, 'font-size': 13, 'text-anchor': 'middle' });
+          t.textContent = NAME[id] ?? id; svg.appendChild(t);
+        }
+        // Port marker.
+        if (ports.port) svg.appendChild(el('circle', { cx: ports.port.x, cy: ports.port.y, r: 4, fill: '#c62828' }));
+        return { svg, boxes };
+      }
+
+      const panels = document.getElementById('panels');
+      for (const [withPort, title] of [[false, 'Without port(Bottom)'], [true, 'With port(Bottom)  — depth:1']]) {
+        const laid = await elk.layout(graph(withPort));
+        const { svg, boxes } = render(laid);
+        const panel = document.createElement('div');
+        panel.className = 'panel';
+        const h2 = document.createElement('h2'); h2.textContent = title; panel.appendChild(h2);
+        panel.appendChild(svg);
+        const b = boxes['n0.1'], t = boxes['n0.0'];
+        const cap = document.createElement('p'); cap.className = 'cap';
+        const stacked = t.y + t.h <= b.y + 1 && Math.abs(t.x - b.x) < 2;
+        cap.innerHTML = `Top @ (${t.x}, ${t.y})&nbsp;·&nbsp; Bottom @ (<b>${b.x}</b>, ${b.y}) &nbsp;→&nbsp; ` +
+          (stacked ? 'cleanly stacked under Top' : '<b>shifted off Top</b> (not cleanly stacked)');
+        panel.appendChild(cap);
+        panels.appendChild(panel);
+      }
+    </script>
+  </body>
+</html>

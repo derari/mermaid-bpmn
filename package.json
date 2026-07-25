@@ -1,0 +1,68 @@
+{
+  "name": "mermaid-bpmn",
+  "version": "1.0.0",
+  "description": "BPMN (Business Process Model and Notation) diagram type for Mermaid",
+  "type": "module",
+  "license": "MIT",
+  "author": "derari",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/derari/mermaid-bpmn.git"
+  },
+  "homepage": "https://github.com/derari/mermaid-bpmn#readme",
+  "bugs": "https://github.com/derari/mermaid-bpmn/issues",
+  "keywords": [
+    "mermaid",
+    "bpmn",
+    "diagram",
+    "business-process-model-and-notation",
+    "process",
+    "workflow"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "licenses",
+    "THIRD-PARTY-NOTICES.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "gen:icons": "node scripts/gen-bpmn-icons.mjs",
+    "icons:update": "npm install -D @iconify-json/mdi@latest && npm run gen:icons",
+    "dev": "vite",
+    "build:examples": "vite build",
+    "preview:examples": "vite preview",
+    "release": "npm run test && npm run build && npm publish"
+  },
+  "peerDependencies": {
+    "mermaid": "^11"
+  },
+  "devDependencies": {
+    "@iconify-json/mdi": "^1.2.3",
+    "@iconify/types": "^2.0.0",
+    "@types/node": "^22",
+    "mermaid": "^11",
+    "tsup": "^8",
+    "typescript": "^5",
+    "vite": "^5",
+    "vitest": "^2"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true,
+    "esbuild@0.21.5": true
+  },
+  "dependencies": {
+    "@iconify/utils": "^3.1.4",
+    "elkjs": "^0.12.0"
+  }
+}

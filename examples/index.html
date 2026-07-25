@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mermaid-bpmn playground</title>
+    <style>
+      /* Light is the default, independent of the OS/browser setting — no
+         prefers-color-scheme here. The toggle button flips html[data-theme]. */
+      :root {
+        color-scheme: light;
+        --bg: #fff;
+        --fg: #222;
+        --border: #ddd;
+        --panel-bg: #fafafa;
+        --code-bg: #f6f6f6;
+        --code-inline-bg: #f0f0f0;
+        --muted: #666;
+        --faint: #999;
+        --link: #06c;
+        --error: #b00;
+      }
+      html[data-theme='dark'] {
+        color-scheme: dark;
+        --bg: #1a1a1a;
+        --fg: #e4e4e4;
+        --border: #444;
+        --panel-bg: #242424;
+        --code-bg: #2a2a2a;
+        --code-inline-bg: #333;
+        --muted: #aaa;
+        --faint: #888;
+        --link: #6cb6ff;
+        --error: #ff8a8a;
+      }
+      body {
+        font-family: 'trebuchet ms', sans-serif;
+        margin: 2rem;
+        color: var(--fg);
+        background: var(--bg);
+      }
+      h1 {
+        font-size: 1.3rem;
+      }
+      .theme-toggle {
+        position: fixed;
+        top: 1rem;
+        right: 1rem;
+        z-index: 10;
+        font: inherit;
+        font-size: 0.85rem;
+        padding: 0.35rem 0.7rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel-bg);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      .theme-toggle:hover {
+        border-color: var(--faint);
+      }
+      .case {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        margin: 1rem 0;
+        padding: 1rem;
+      }
+      .case h2 {
+        font-size: 1rem;
+        margin: 0 0 0.5rem;
+      }
+      .case pre {
+        background: var(--code-bg);
+        padding: 0.5rem 0.75rem;
+        border-radius: 4px;
+        font-size: 0.85rem;
+        overflow-x: auto;
+      }
+      .render {
+        margin-top: 0.75rem;
+      }
+      .error {
+        color: var(--error);
+        white-space: pre-wrap;
+      }
+      .toc {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        margin: 1rem 0;
+        padding: 0.75rem 1rem;
+        background: var(--panel-bg);
+      }
+      .toc h2 {
+        font-size: 0.95rem;
+        margin: 0 0 0.5rem;
+      }
+      .toc ul {
+        margin: 0;
+        padding-left: 1.25rem;
+      }
+      .toc ul.two-col {
+        columns: 2;
+      }
+      .toc a {
+        color: var(--link);
+        text-decoration: none;
+      }
+      .toc a:hover {
+        text-decoration: underline;
+      }
+      .toc .pending {
+        color: var(--faint);
+      }
+      .filter-note {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .filter-note code {
+        background: var(--code-inline-bg);
+        padding: 0 0.25rem;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="theme-toggle" class="theme-toggle" type="button">🌙 Dark</button>
+    <h1>mermaid-bpmn playground</h1>
+    <p>
+      Edit <code>examples/cases.js</code>, then refresh.
+      <a class="nav" href="https://github.com/derari/mermaid-bpmn#readme">[readme]</a>
+      See also the <a href="./editor.html">live editor</a> and <a href="https://derari.github.io/mermaid-fmc">FMC</a>.
+    </p>
+    <p class="filter-note">
+      Tip: add <code>?select=icon</code> to the URL to show only examples matching a
+      (case-insensitive) regex.
+    </p>
+    <div id="toc" class="toc" hidden>
+      <h2>Examples</h2>
+      <ul id="toc-list"></ul>
+    </div>
+    <div id="cases"></div>
+
+    <script type="module">
+      import mermaid from 'mermaid';
+      import bpmn, { registerIconPacks } from '../src/index.ts';
+      import { cases } from './cases.js';
+
+      mermaid.registerExternalDiagrams([bpmn]);
+
+      // The Iconify packs `icon:<name>:<icon>` can draw from; the value is the
+      // `@iconify-json/<pkg>` package. We register only the packs the visible
+      // cases actually reference (below) rather than the whole catalog, because
+      // ensureLoaded (see src/icons.ts) fetches every *registered* loader on the
+      // first icon — so a registered-but-unused pack would be fetched too.
+      const ICON_PACKS = {
+        lucide: 'lucide',
+        nonicons: 'nonicons',
+        devicon: 'devicon-plain',
+        fa: 'fa7-regular',
+        'fa-brands': 'fa7-brands',
+        mdi: 'mdi',
+      };
+
+      const container = document.getElementById('cases');
+      const tocList = document.getElementById('toc-list');
+
+      // Optional ?select=<regex> filter: keep only cases whose title or code
+      // matches the (case-insensitive) regex. Falls back to showing everything
+      // if the pattern is invalid.
+      const selectParam = new URLSearchParams(location.search).get('select');
+      let selectRe = null;
+      if (selectParam) {
+        try {
+          selectRe = new RegExp(selectParam, 'i');
+        } catch (err) {
+          const note = document.createElement('p');
+          note.className = 'error';
+          note.textContent = `Invalid ?select regex: ${err.message}`;
+          container.before(note);
+        }
+      }
+
+      const slugCounts = new Map();
+      const slugFor = (title) => {
+        let base = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        if (!base) base = 'case';
+        const n = slugCounts.get(base) ?? 0;
+        slugCounts.set(base, n + 1);
+        return n === 0 ? base : `${base}-${n}`;
+      };
+
+      const visible = cases.filter(
+        (c) => !selectRe || selectRe.test(c.title) || selectRe.test(c.code),
+      );
+
+      if (visible.length) {
+        document.getElementById('toc').hidden = false;
+      }
+      if (visible.length >= 8) {
+        tocList.classList.add('two-col');
+      }
+
+      // Register only the packs the visible cases actually use (scanned from their
+      // `icon:<pack>:` references), so no unused pack's JSON is ever fetched.
+      const usedPacks = new Set();
+      for (const c of visible) {
+        for (const m of c.code.matchAll(/\bicon:([\w-]+):/g)) {
+          if (ICON_PACKS[m[1]]) usedPacks.add(m[1]);
+        }
+      }
+      registerIconPacks(
+        [...usedPacks].map((name) => ({
+          name,
+          loader: () =>
+            fetch(`https://cdn.jsdelivr.net/npm/@iconify-json/${ICON_PACKS[name]}/icons.json`).then(
+              (r) => r.json(),
+            ),
+        })),
+      );
+
+      // Pass 1: lay out the whole page synchronously — every TOC entry (as a
+      // non-clickable placeholder) and every case skeleton — so the reader sees
+      // the full outline immediately, before any (potentially slow) render runs.
+      const items = visible.map((c, i) => {
+        const slug = slugFor(c.title);
+
+        const tocLabel = document.createElement('span');
+        tocLabel.className = 'pending';
+        tocLabel.textContent = c.title;
+        const li = document.createElement('li');
+        li.appendChild(tocLabel);
+        tocList.appendChild(li);
+
+        const section = document.createElement('div');
+        section.className = 'case';
+        section.id = slug;
+
+        const h2 = document.createElement('h2');
+        h2.textContent = c.title;
+        section.appendChild(h2);
+
+        const pre = document.createElement('pre');
+        pre.textContent = c.code;
+        section.appendChild(pre);
+
+        const render = document.createElement('div');
+        render.className = 'render';
+        section.appendChild(render);
+        container.appendChild(section);
+
+        return { c, i, slug, li, tocLabel, render };
+      });
+
+      // Pass 2: render every case. Re-runnable so the theme toggle can re-render
+      // the whole page with new mermaid theme variables. Each pass uses a fresh id
+      // generation to avoid colliding with the previous render's ids. On the first
+      // pass, swap each TOC placeholder for a real anchor once its case loads.
+      let gen = 0;
+      async function renderAll() {
+        const g = gen++;
+        for (const item of items) {
+          try {
+            const { svg } = await mermaid.render(`bpmn-${g}-${item.i}`, item.c.code);
+            item.render.innerHTML = svg;
+          } catch (err) {
+            item.render.innerHTML = `<div class="error">${String(
+              err && err.stack ? err.stack : err,
+            )}</div>`;
+          }
+
+          if (!item.linked) {
+            const link = document.createElement('a');
+            link.href = `#${item.slug}`;
+            link.textContent = item.c.title;
+            item.li.replaceChild(link, item.tocLabel);
+            item.linked = true;
+          }
+        }
+      }
+
+      // Theme: light is the default (set below), regardless of the OS setting. The
+      // toggle flips the page chrome (html[data-theme]) and mermaid's own theme,
+      // then re-renders. The playground uses mermaid's built-in light/dark themes;
+      // bpmn reads its fill/stroke palette from each theme (see src/theme.ts).
+      const THEMES = { light: 'default', dark: 'dark' };
+      const toggle = document.getElementById('theme-toggle');
+      let theme = 'light';
+      async function setTheme(mode) {
+        theme = mode;
+        document.documentElement.dataset.theme = mode;
+        toggle.textContent = mode === 'dark' ? '☀ Light' : '🌙 Dark';
+        mermaid.initialize({ startOnLoad: false, theme: THEMES[mode] });
+        await renderAll();
+      }
+      toggle.addEventListener('click', () => setTheme(theme === 'dark' ? 'light' : 'dark'));
+
+      await setTheme('light');
+    </script>
+  </body>
+</html>

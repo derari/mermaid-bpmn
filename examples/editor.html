@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mermaid-bpmn editor</title>
+    <style>
+      /* Light is the default, independent of the OS/browser setting — no
+         prefers-color-scheme here. The toggle button flips html[data-theme]. */
+      :root {
+        color-scheme: light;
+        --bg: #fff;
+        --fg: #222;
+        --border: #ddd;
+        --border-faint: #eee;
+        --panel-bg: #fafafa;
+        --label: #999;
+        --hint: #777;
+        --faint: #999;
+        --error: #b00;
+      }
+      html[data-theme='dark'] {
+        color-scheme: dark;
+        --bg: #1a1a1a;
+        --fg: #e4e4e4;
+        --border: #444;
+        --border-faint: #333;
+        --panel-bg: #242424;
+        --label: #888;
+        --hint: #999;
+        --faint: #777;
+        --error: #ff8a8a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family: 'trebuchet ms', sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 0.6rem 1rem;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+      }
+      header h1 {
+        font-size: 1.1rem;
+        margin: 0;
+      }
+      header .hint {
+        font-size: 0.8rem;
+        color: var(--hint);
+      }
+      .theme-toggle {
+        margin-left: auto;
+        align-self: center;
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.3rem 0.6rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel-bg);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      .theme-toggle:hover {
+        border-color: var(--faint);
+      }
+      main {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      .pane {
+        flex: 1 1 50%;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .pane + .pane {
+        border-left: 1px solid var(--border);
+      }
+      .pane > .label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--label);
+        padding: 0.4rem 0.75rem;
+        border-bottom: 1px solid var(--border-faint);
+      }
+      #source {
+        flex: 1;
+        border: 0;
+        resize: none;
+        padding: 0.75rem 1rem;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 0.85rem;
+        line-height: 1.5;
+        tab-size: 2;
+        outline: none;
+      }
+      #output {
+        flex: 1;
+        overflow: auto;
+        padding: 1rem;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+      }
+      #output svg {
+        max-width: 100%;
+        height: auto;
+      }
+      .error {
+        color: var(--error);
+        white-space: pre-wrap;
+        font-family: ui-monospace, monospace;
+        font-size: 0.8rem;
+        align-self: stretch;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>mermaid-bpmn editor</h1>
+      <a class="nav" href="./index.html">[example gallery]</a>
+      <a class="nav" href="https://github.com/derari/mermaid-bpmn#readme">[readme]</a>
+      <span class="hint">Edit on the left — the diagram re-renders as you type.</span>
+      <button id="theme-toggle" class="theme-toggle" type="button">🌙 Dark</button>
+    </header>
+    <main>
+      <section class="pane">
+        <div class="label">BPMN source</div>
+        <textarea id="source" spellcheck="false"></textarea>
+      </section>
+      <section class="pane">
+        <div class="label">Rendered output</div>
+        <div id="output"></div>
+      </section>
+    </main>
+
+    <script type="module">
+      import mermaid from 'mermaid';
+      import bpmn, { registerIconPacks } from '../src/index.ts';
+
+      mermaid.registerExternalDiagrams([bpmn]);
+      // Icons: register the Iconify packs the `icon:` style prop can draw from.
+      // `name` is the prefix used in `icon:<name>:<icon>`; the second arg is the
+      // `@iconify-json/<pkg>` package. Each loader is lazy — a pack's JSON is
+      // fetched only once a diagram actually uses an icon from it.
+      const iconPack = (name, pkg) => ({
+        name,
+        loader: () =>
+          fetch(`https://cdn.jsdelivr.net/npm/@iconify-json/${pkg}/icons.json`).then((r) =>
+            r.json(),
+          ),
+      });
+      registerIconPacks([
+        iconPack('lucide', 'lucide'),
+        iconPack('nonicons', 'nonicons'),
+        iconPack('devicon', 'devicon-plain'),
+        iconPack('fa', 'fa7-regular'),
+        iconPack('fa-brands', 'fa7-brands'),
+        iconPack('mdi', 'mdi'),
+      ]);
+      // bpmn reads its palette from the resolved Mermaid theme (see src/theme.ts):
+      //   fill   ← mainBkg     (default node fill)
+      //   stroke ← nodeBorder  (node outlines) + lineColor (lines are separate)
+      // `theme: 'base'` so our variables aren't recomputed.
+      const THEME_VARS = {
+        light: { mainBkg: 'white', nodeBorder: '#111', lineColor: '#111' },
+        dark: { mainBkg: '#111', nodeBorder: '#eee', lineColor: '#eee' },
+      };
+      // suppressErrorRendering: on a parse error mermaid otherwise injects its
+      // "Syntax error in text" bomb SVG into a temp element it leaves in the DOM.
+      // With a fresh id per render those pile up and never clear — let our catch
+      // block below show the error text in the output pane instead.
+      function initTheme(mode) {
+        mermaid.initialize({
+          startOnLoad: false,
+          suppressErrorRendering: true,
+          theme: 'base',
+          themeVariables: THEME_VARS[mode],
+        });
+      }
+
+      // A single diagram that exercises the currently-supported BPMN features.
+      const EXAMPLE = String.raw`bpmn LR
+
+  # automatically links workflow steps without successors
+  auto-sequence
+
+  # define re-usable styles
+  classDef bg-pool fill:#B098E7
+  classDef bg-lane fill:#ECECFF
+  classDef important fill:#FFE2D8
+
+  # declare entities with
+  # [entity type] [id?] ["label"?] [:::class]
+  pool P1 "Pool (Black Box)" :::bg-pool
+
+  # for most entities, label defaults to id
+  pool Pool (White Box) :::bg-pool
+    lane Lane 1 :::bg-lane
+      # no label
+      message start s1 ""
+
+      # use absolute lines to connect entities by id
+      P1 --> s1
+      d1 --- s1
+
+      data object d1 "Data \n Object"
+      subprocess "Collapsed \n Subprocess"
+        # use relative lines to connect the current entity
+        --> P1
+
+      event gate
+        --> Receive Task
+        --> t1
+
+      # steps without successor will be linked with auto-sequence
+      timer catch t1 "Timer \n Intermediate \n Event"
+      escalation "Escalation \n End Event"
+      receive task Receive Task
+        P1 -->
+
+      ad-hoc subprocess Ad-hoc Subprocess
+        auto-sequence off
+        # change layout direction
+        direction TB
+        task Task
+        task Task
+        timer boundary
+          --> Manual Task
+
+      # use "|" to declare a multi-line label
+      link throw |
+          Link
+          Intermediate
+          Event
+
+      manual task Manual Task
+      end
+      data collection Collection
+        Manual Task -->
+
+    lane Lane 2 :::bg-lane
+      link catch
+      catch
+      data store "Data \n Store"
+        --> Subprocess
+      subprocess Subprocess
+        start Start Event
+        loop subprocess "Looped \n Subprocess"
+        end "End Event"
+        event-subprocess Event Subprocess
+          conditional start "Conditional \n Start Event"
+          error e1 "Error End \n Event"
+
+        # style element by id
+        style e1 fill:#FFD8D8 stroke:#891A1A
+
+        error boundary | e
+            Attached
+            Intermediate
+            Error Event
+          # style single elements directly
+          style stroke:#891A1A
+          --> sig-end
+            # lines can be styled, too
+            style stroke:orange
+
+     # apply style classes by id
+     class Send Task important
+
+     gate
+       # iconify image packs available in this editor:
+       # lucide, fa, fa-brands, mdi, nonicons, devicon
+       #
+       # style icon:lucide:banana
+       --> Call Activity
+       --> x2
+     signal end sig-end "Signal \n End Event"
+     call Call Activity
+     gate x2 "Exclusive \n Gateway"
+     parallel gate "Parallel \n Gateway"
+       --> pt
+       --> Send Task
+     group Group
+       parallel task pt |
+           Multi Instance
+           Task (Parallel)
+         --> p2
+       send task Send Task
+         --> p2
+     parallel gate p2
+     message end "Message \n End Event"
+`;
+
+      const source = document.getElementById('source');
+      const output = document.getElementById('output');
+      source.value = EXAMPLE;
+
+      let seq = 0;
+      async function render() {
+        const id = `bpmn-editor-${seq++}`;
+        try {
+          const { svg } = await mermaid.render(id, source.value);
+          output.innerHTML = svg;
+        } catch (err) {
+          output.innerHTML = `<div class="error">${String(
+            err && err.stack ? err.stack : err,
+          )}</div>`;
+        }
+      }
+
+      // Debounce so we render once the user pauses typing, not on every keystroke.
+      let timer;
+      source.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(render, 250);
+      });
+
+      // Theme: light is the default, regardless of the OS setting. The toggle flips
+      // the page chrome (html[data-theme]) and mermaid's theme variables, then
+      // re-renders. Dark ≡ `style stroke:#eee tint:black shade:white`.
+      const toggle = document.getElementById('theme-toggle');
+      let theme = 'light';
+      function setTheme(mode) {
+        theme = mode;
+        document.documentElement.dataset.theme = mode;
+        toggle.textContent = mode === 'dark' ? '☀ Light' : '🌙 Dark';
+        initTheme(mode);
+        render();
+      }
+      toggle.addEventListener('click', () => setTheme(theme === 'dark' ? 'light' : 'dark'));
+
+      setTheme('light');
+    </script>
+  </body>
+</html>
