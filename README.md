@@ -6,6 +6,15 @@ It draws the full BPMN vocabulary — pools and lanes, activities, gateways, eve
 data objects, groups, and text annotations. Try it in the
 [live editor](https://derari.github.io/mermaid-bpmn/editor).
 
+## Installation
+
+```bash
+npm install mermaid-bpmn mermaid
+```
+
+`mermaid` is a **peer dependency** (`^11`) — install it alongside the plugin if
+your project doesn't already depend on it.
+
 ## Usage
 
 ```js
@@ -860,7 +869,7 @@ npm run preview:examples # serve that build locally to sanity-check it
 
 ```bash
 npm run build      # tsup → dist/ (ESM + .d.ts)
-npm run release    # test + build + npm publish
+npm run release    # npm publish (prepublishOnly runs test + build first)
 ```
 
 `mermaid` is a peer dependency (`^11`); consumers bring their own. The main

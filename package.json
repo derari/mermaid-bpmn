@@ -4,7 +4,7 @@
   "description": "BPMN (Business Process Model and Notation) diagram type for Mermaid",
   "type": "module",
   "license": "MIT",
-  "author": "derari",
+  "author": "Arian Treffer (https://github.com/derari)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/derari/mermaid-bpmn.git"
@@ -22,6 +22,10 @@
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -42,7 +46,8 @@
     "dev": "vite",
     "build:examples": "vite build",
     "preview:examples": "vite preview",
-    "release": "npm run test && npm run build && npm publish"
+    "prepublishOnly": "npm run test && npm run build",
+    "release": "npm publish"
   },
   "peerDependencies": {
     "mermaid": "^11"
