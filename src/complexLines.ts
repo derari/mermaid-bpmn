@@ -1,4 +1,4 @@
-import type { Entity, Line, LineType, RouteSpec, StyleProps } from './db.js';
+import type { Entity, Line, LineType, RouteSpec, SlashEnd, StyleProps } from './db.js';
 
 // A complex line is a chain — `node arrow node arrow node …` of any length —
 // linking named entities. Every node references an entity by id (or, for an
@@ -16,6 +16,12 @@ export interface ComplexLineSpec {
   // There are always at least three nodes (two arrows).
   nodes: ChainNode[];
   arrows: LineType[]; // one per gap; arrows.length === nodes.length - 1
+  // Per-gap slash decorations (from a leading/trailing `/` on that arrow),
+  // aligned with `arrows`. Undefined, or a sparse entry, when a gap has none.
+  slashes?: (SlashEnd | undefined)[];
+  // A quoted label at the end of the chain definition. It applies to the FIRST
+  // segment only (the others are left unlabelled).
+  label?: string;
   // Styles from a `style` nested under the complex line: they set the stroke of
   // every generated segment.
   style?: StyleProps;
@@ -64,17 +70,23 @@ export function expandComplexLines(roots: Entity[], specs: ComplexLineSpec[]): L
     // Carries the complex line's own styling onto a generated segment: its stroke,
     // the container it inherits stroke from, and any routing. Kept off the object
     // when absent so generated-line equality (in tests) is unaffected.
-    const seg = (source: Entity, target: Entity, type: LineType): Line => {
+    const seg = (source: Entity, target: Entity, type: LineType, slash?: SlashEnd, label?: string): Line => {
       const line: Line = { source, target, type };
+      if (slash) line.slash = slash;
+      if (label !== undefined) line.label = label;
       if (spec.style) line.style = spec.style;
       if (spec.container) line.container = spec.container;
       if (spec.routing) line.routing = spec.routing;
       return line;
     };
 
-    // One segment per arrow, wiring each consecutive pair of entities.
+    // One segment per arrow, wiring each consecutive pair of entities and
+    // carrying that arrow's own slash decoration. The chain's label rides on the
+    // first segment only.
     spec.arrows.forEach((type, i) => {
-      lines.push(seg(resolved[i] as Entity, resolved[i + 1] as Entity, type));
+      lines.push(
+        seg(resolved[i] as Entity, resolved[i + 1] as Entity, type, spec.slashes?.[i], i === 0 ? spec.label : undefined),
+      );
     });
   }
   return lines;

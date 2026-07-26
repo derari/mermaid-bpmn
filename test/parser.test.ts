@@ -512,6 +512,136 @@ describe('bpmn parser', () => {
         { source: b, target: c, type: '-->' },
       ]);
     });
+
+    describe('slash line ends', () => {
+      it('reads a leading slash as a source-end slash on an undirected line', () => {
+        parse('task A', 'task B', 'A /-- B');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '---', slash: 'start' }]);
+      });
+
+      it('reads a trailing slash as a target-end slash on an undirected line', () => {
+        parse('task A', 'task B', 'A --/ B');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '---', slash: 'end' }]);
+      });
+
+      it('keeps the arrow direction alongside a leading slash (/-->)', () => {
+        parse('task A', 'task B', 'A /--> B');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '-->', slash: 'start' }]);
+      });
+
+      it('keeps the arrow direction alongside a trailing slash (<--/)', () => {
+        parse('task A', 'task B', 'A <--/ B');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '<--', slash: 'end' }]);
+      });
+
+      it('reads a slash on both ends (/--/)', () => {
+        parse('task A', 'task B', 'A /--/ B');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '---', slash: 'both' }]);
+      });
+
+      it('carries a slash on a relative line, at the enclosing (target) end', () => {
+        parse('subprocess S', '  --/ Done', '  task Done');
+        const [sp] = db.getEntities();
+        expect(db.getLines()).toEqual([
+          { source: sp, target: 'Done', type: '---', slash: 'end', container: sp },
+        ]);
+      });
+
+      it('carries a leading slash on a relative line, at the enclosing (source) end', () => {
+        parse('subprocess S', '  /--> Done', '  task Done');
+        const [sp] = db.getEntities();
+        expect(db.getLines()).toEqual([
+          { source: sp, target: 'Done', type: '-->', slash: 'start', container: sp },
+        ]);
+      });
+
+      it('carries each arrow\'s own slash through a complex chain', () => {
+        parse('task A', 'task B', 'task C', 'A /--> B --/ C');
+        const [a, b, c] = db.getEntities();
+        expect(db.getLines()).toEqual([
+          { source: a, target: b, type: '-->', slash: 'start' },
+          { source: b, target: c, type: '---', slash: 'end' },
+        ]);
+      });
+
+      it('leaves a slash-free line without the field', () => {
+        parse('task A', 'task B', 'A --> B');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '-->' }]);
+      });
+
+      it('accepts | as an alternate spelling of the slash mark', () => {
+        parse('task A', 'task B', 'A |--> B');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '-->', slash: 'start' }]);
+      });
+
+      it('accepts a backslash as an alternate spelling of the slash mark', () => {
+        parse('task A', 'task B', 'A <--\\ B');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '<--', slash: 'end' }]);
+      });
+
+      it('accepts the marks on both ends and mixed across a chain', () => {
+        parse('task A', 'task B', 'task C', 'A |--| B --\\ C');
+        const [a, b, c] = db.getEntities();
+        expect(db.getLines()).toEqual([
+          { source: a, target: b, type: '---', slash: 'both' },
+          { source: b, target: c, type: '---', slash: 'end' },
+        ]);
+      });
+
+      it('does not treat a bare | (multi-line label marker) as a connector', () => {
+        parse('subprocess Bob |', '    Heading', '  task Inner');
+        // The `|` opens a multi-line label on Bob, so no line is created.
+        expect(db.getLines()).toEqual([]);
+        expect(db.getEntities()[0].label).toBe('Heading');
+      });
+    });
+
+    describe('line labels', () => {
+      it('attaches a quoted label at the end of an absolute line', () => {
+        parse('task A', 'task B', 'A --> B "go"');
+        expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '-->', label: 'go' }]);
+      });
+
+      it('labels a relative line', () => {
+        parse('subprocess S', '  --> Done "next"', '  task Done');
+        const [sp] = db.getEntities();
+        expect(db.getLines()).toEqual([
+          { source: sp, target: 'Done', type: '-->', label: 'next', container: sp },
+        ]);
+      });
+
+      it('combines with a line-end slash', () => {
+        parse('task A', 'task B', 'A /--> B "default"');
+        expect(db.getLines()).toEqual([
+          { source: 'A', target: 'B', type: '-->', slash: 'start', label: 'default' },
+        ]);
+      });
+
+      it('applies a chain label to the first segment only', () => {
+        parse('task A', 'task B', 'task C', 'A --> B --> C "first"');
+        const [a, b, c] = db.getEntities();
+        expect(db.getLines()).toEqual([
+          { source: a, target: b, type: '-->', label: 'first' },
+          { source: b, target: c, type: '-->' },
+        ]);
+      });
+
+      it('honours \\n and quote escapes in a line label', () => {
+        parse('task A', 'task B', 'A --> B "two\\nlines"');
+        expect(db.getLines()[0].label).toBe('two\nlines');
+      });
+
+      it('does not treat an entity label as a line', () => {
+        parse('task A "Approve"');
+        expect(db.getLines()).toEqual([]);
+        expect(entityLabel(db.getEntities()[0])).toBe('Approve');
+      });
+
+      it('leaves an unlabelled line without the field', () => {
+        parse('task A', 'task B', 'A --> B');
+        expect(db.getLines()[0].label).toBeUndefined();
+      });
+    });
   });
 
   describe('auto-sequence', () => {

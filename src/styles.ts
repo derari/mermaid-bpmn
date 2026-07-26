@@ -63,6 +63,13 @@ const styles = (options: ThemeOptions = {}): string => {
   .bpmn-arrow {
     fill: ${line};
   }
+  /* A line-end slash tick (a leading/trailing \`/\` connector — BPMN's
+     default-sequence-flow marker). Drawn as its own short line, so it tracks the
+     edge color; an explicit line stroke overrides it inline (see renderer). */
+  .bpmn-edge-slash {
+    stroke: ${line};
+    stroke-width: 1.5px;
+  }
   /* A message flow (a connection crossing pool boundaries) is dashed. Its hollow
      arrowhead and origin circle are drawn as inline-styled markers (see renderer). */
   .bpmn-message-flow {

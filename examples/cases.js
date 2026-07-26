@@ -84,35 +84,126 @@ export const cases = [
   B --> join`,
   },
   {
-    title: 'All event types and operations',
-    code: `bpmn
+    title: 'Default sequence flow (slash marker)',
+    // A leading `/` on the connector draws BPMN's default-sequence-flow slash at
+    // the source end — here on the branch the gateway falls through to.
+    code: `bpmn LR
   start
-  end
-  catch mid
-  non-interrupt niStart
-  message start msgS
-  message throw msgT
-  timer catch timC
-  timer throw timT
-  conditional start conS
-  conditional throw conT
-  link catch lnkC
-  link throw lnkT
-  error boundary errB
-  error end errE
-  signal catch sigC
-  signal throw sigT
-  escalation non-interrupt escN
-  escalation throw escT
-  compensation catch cmpC
-  compensation throw cmpT
-  cancel boundary continue cnlB
-  cancel end cnlE
-  multiple catch mulC
-  multiple throw mulT
-  parallel start parS
-  parallel throw parT
-  termination`,
+  exclusive gate check "Approved?"
+  task Approve
+  task Reject
+  start --> check
+  check --> Approve
+  check /--> Reject`,
+  },
+  {
+    title: 'Line labels (quoted, near source)',
+    // A quoted label at the end of a line is drawn along it, near the source. On a
+    // complex chain the label applies to the first segment only.
+    code: `bpmn LR
+  start
+  exclusive gate check "Approved?"
+  task Approve
+  task Reject
+  gate join
+  task Archive
+  start --> check "submit"
+  check --> Approve "yes"
+  check /--> Reject "no"
+  Approve --> join
+  Reject --> join
+  join --> Archive "always"`,
+  },
+  {
+    title: 'Line-end slashes (all forms)',
+    // A `/` on either end of a connector draws a diagonal slash there, independent
+    // of the arrowhead: `/--`, `--/`, `/-->`, `<--/`, and `/--/` on both ends.
+    code: `bpmn LR
+  task A1
+  task B1
+  task A2
+  task B2
+  task A3
+  task B3
+  task A4
+  task B4
+  task A5
+  task B5
+  A1 /-- B1
+  A2 --/ B2
+  A3 /--> B3
+  A4 <--/ B4
+  A5 /--/ B5`,
+  },
+  {
+    title: 'All event types and operations',
+    // One region per event operation; within each, the event TYPES that BPMN
+    // allows for that operation (invalid combinations are omitted). Boundary
+    // events sit loose here rather than on a host activity — not valid BPMN, but
+    // it renders the glyphs for the catalogue.
+    code: `bpmn tb
+  region "Start Events" lr
+    start "Start"
+    message start "Message"
+    timer start "Timer"
+    conditional start "Conditional"
+    signal start "Signal"
+    multiple start "Multiple"
+    parallel start "Parallel"
+  region "Non-interrupting Start Events" lr
+    message non-interrupt "Message"
+    timer non-interrupt "Timer"
+    conditional non-interrupt "Conditional"
+    signal non-interrupt "Signal"
+    escalation non-interrupt "Escalation"
+    multiple non-interrupt "Multiple"
+    parallel non-interrupt "Parallel"
+  region "Catch Events" lr
+    message catch "Message"
+    timer catch "Timer"
+    conditional catch "Conditional"
+    link catch "Link"
+    signal catch "Signal"
+    multiple catch "Multiple"
+    parallel catch "Parallel"
+    catch "Custom"
+      style icon:lucide:banana
+  region "Throw Events" lr
+    message throw "Message"
+    link throw "Link"
+    signal throw "Signal"
+    escalation throw "Escalation"
+    compensation throw "Compensation"
+    multiple throw "Multiple"
+  region "Interrupting Boundary Events" lr
+    message boundary "Message"
+    timer boundary "Timer"
+    conditional boundary "Conditional"
+    signal boundary "Signal"
+    error boundary "Error"
+    escalation boundary "Escalation"
+    compensation boundary "Compensation"
+    cancel boundary "Cancel"
+    multiple boundary "Multiple"
+    parallel boundary "Parallel"
+  region "Non-interrupting Boundary Events" lr
+    message boundary continue "Message"
+    timer boundary continue "Timer"
+    conditional boundary continue "Conditional"
+    signal boundary continue "Signal"
+    escalation boundary continue "Escalation"
+    multiple boundary continue "Multiple"
+    parallel boundary continue "Parallel"
+  region "End Events" lr
+    end e_non "End"
+    message end "Message"
+    signal end "Signal"
+    error end "Error"
+    escalation end "Escalation"
+    compensation end "Compensation"
+    cancel end "Cancel"
+    termination "Termination"
+    multiple end "Multiple"`,
   },
   {
     title: 'Boundary events on activities',

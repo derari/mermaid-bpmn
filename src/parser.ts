@@ -14,6 +14,7 @@ import {
   type LineType,
   type RouteSpec,
   type Side,
+  type SlashEnd,
   STYLE_PROP_KEYS,
   type StyleProps,
   type TaskType,
@@ -114,19 +115,46 @@ function extractLabel(rest: string): { label?: string; rest: string } {
 }
 
 // Lines connect two entities by name. A connector is a run of one or more
-// dashes carrying an optional direction: a leading `<` points at the first
-// entity (`<--`), a trailing `>` at the second (`-->`), neither is plain
-// (`---`). The dash run may be any length (`-`, `-->`, `<--------`), but `<`
-// only ever leads and `>` only ever trails, so broken arrows like `-<` or `>-`
-// (and the combined `<-->`) don't match. Whitespace must flank the connector so
-// it never eats a hyphen from an entity name.
-const ARROW = String.raw`(<-+|-+>|-+)`;
+// dashes carrying an optional decoration on each end. A leading `<` points the
+// arrow at the first entity (`<--`), a trailing `>` at the second (`-->`),
+// neither is plain (`---`). Independently, a slash mark on either end draws a
+// slash there (`/--`, `--/`, `/-->`, `<--/`). The slash mark may be spelled `/`,
+// `|`, or `\` interchangeably — all three parse to the same slash decoration. The
+// dash run may be any length (`-`, `-->`, `<--------`). `<` only ever leads and
+// `>` only ever trails, so broken arrows like `-<` or `>-` (and the combined
+// `<-->`) don't match; a slash mark may lead and/or trail but never shares an end
+// with an arrowhead (so `</` or `>/` on one end don't arise). Whitespace must
+// flank the connector so it never eats a hyphen from an entity name.
+//
+// The three alternatives are `<`-led (optional trailing slash mark), slash-led
+// (optional trailing `>` or slash mark), and plain-led (optional trailing `>` or
+// slash mark) — every valid combination except a `<`…`>` double arrow. In the raw
+// template `\\` is a literal backslash and `|` is literal inside the class.
+const SLASH_MARK = String.raw`[/\\|]`;
+const ARROW = String.raw`(<-+${SLASH_MARK}?|${SLASH_MARK}-+[>/\\|]?|-+[>/\\|]?)`;
 
-// Collapses a matched connector of any length to its canonical LineType.
+// Collapses a matched connector of any length to its canonical LineType. The
+// slash ends are read separately (see slashEnds), so only the arrowheads matter:
+// a `<` prefix or `>` suffix, else undirected.
 function arrowType(arrow: string): LineType {
   if (arrow.startsWith('<')) return '<--';
   if (arrow.endsWith('>')) return '-->';
   return '---';
+}
+
+// Reads the slash decoration of a matched connector: a leading slash mark (`/`,
+// `|`, or `\`) marks the source end, a trailing one the target end. Returns
+// undefined when neither is present.
+function isSlashMark(c: string): boolean {
+  return c === '/' || c === '\\' || c === '|';
+}
+function slashEnds(arrow: string): SlashEnd | undefined {
+  const start = isSlashMark(arrow[0]);
+  const end = isSlashMark(arrow[arrow.length - 1]);
+  if (start && end) return 'both';
+  if (start) return 'start';
+  if (end) return 'end';
+  return undefined;
 }
 
 // Either endpoint may be omitted, and the enclosing entity fills the empty slot
@@ -154,13 +182,16 @@ const ARROW_AT_RE = new RegExp(String.raw`^${ARROW}`);
 
 // Tokenises a line into alternating nodes and arrows, or returns null when it is
 // not a well-formed chain (so the caller falls through to plain-line parsing).
-function scanChain(s: string): { nodes: ScanNode[]; arrows: LineType[] } | null {
+function scanChain(
+  s: string,
+): { nodes: ScanNode[]; arrows: LineType[]; slashes: (SlashEnd | undefined)[] } | null {
   const N = s.length;
   const isWs = (c: string): boolean => c === ' ' || c === '\t';
-  const isArrowChar = (c: string): boolean => c === '<' || c === '-' || c === '>';
-  const arrowAt = (i: number): { type: LineType; end: number } | null => {
+  const isArrowChar = (c: string): boolean =>
+    c === '<' || c === '-' || c === '>' || isSlashMark(c);
+  const arrowAt = (i: number): { type: LineType; slash?: SlashEnd; end: number } | null => {
     const m = ARROW_AT_RE.exec(s.slice(i));
-    return m ? { type: arrowType(m[1]), end: i + m[1].length } : null;
+    return m ? { type: arrowType(m[1]), slash: slashEnds(m[1]), end: i + m[1].length } : null;
   };
   // A valid right boundary for an arrow: end of string or whitespace — never a
   // glued name character. `<` alone is not an arrow, so `A <--> B` is rejected.
@@ -187,6 +218,7 @@ function scanChain(s: string): { nodes: ScanNode[]; arrows: LineType[] } | null 
 
   const nodes: ScanNode[] = [];
   const arrows: LineType[] = [];
+  const slashes: (SlashEnd | undefined)[] = [];
   let cur = readNode(0);
   nodes.push(cur.node);
   let i = cur.next;
@@ -196,11 +228,12 @@ function scanChain(s: string): { nodes: ScanNode[]; arrows: LineType[] } | null 
     const ar = arrowAt(i);
     if (!ar || !arrowBoundary(ar.end)) return null;
     arrows.push(ar.type);
+    slashes.push(ar.slash);
     cur = readNode(ar.end);
     nodes.push(cur.node);
     i = cur.next;
   }
-  return { nodes, arrows };
+  return { nodes, arrows, slashes };
 }
 
 // Parses an `icon-size` value into a numeric factor of the line height (1 = one
@@ -1058,12 +1091,24 @@ export const parser = {
         stack.push({ indent, entity: parent, styleTarget: target, routeTarget: target });
       };
 
+      // A line may carry a quoted label at the end (`A --> B "text"`). Peel it off
+      // before matching the connector so the label text never disturbs the scan;
+      // the remaining body is what the line patterns below parse. When no line
+      // matches, the ORIGINAL line falls through to matchEntity, which does its own
+      // label handling — so an entity declaration's label is untouched.
+      const { label: lineLabel, rest: lineBody } = extractLabel(line);
+      // Attaches the peeled label to a stored line, when present.
+      const withLabel = (l: ReturnType<typeof db.addLine>): typeof l => {
+        if (lineLabel !== undefined) l.label = lineLabel;
+        return l;
+      };
+
       // Complex lines are chains of two or more arrows linking named entities.
       // They must be matched before the plain-line patterns, whose greedy tail
       // would otherwise swallow later arrows as part of an entity name. A
       // single-arrow line, or one that does not tokenise cleanly, falls through to
       // the plain-line trio below.
-      const chain = scanChain(line);
+      const chain = scanChain(lineBody);
       if (chain && chain.arrows.length >= 2) {
         const last = chain.nodes.length - 1;
         // An empty node is an omitted endpoint (relative line); it may only sit
@@ -1080,6 +1125,11 @@ export const parser = {
             nodes: chain.nodes.map(toNode),
             arrows: chain.arrows,
           };
+          // Per-arrow slash decorations, carried only when at least one segment
+          // has one so a slash-free chain's spec stays minimal (test equality).
+          if (chain.slashes.some(Boolean)) spec.slashes = chain.slashes;
+          // A chain's label rides on its first segment (see expandComplexLines).
+          if (lineLabel !== undefined) spec.label = lineLabel;
           // A relative chain inherits its enclosing container's stroke; an
           // absolute one falls back to the endpoints' common ancestor.
           if (relative) spec.container = parent;
@@ -1089,27 +1139,35 @@ export const parser = {
         }
       }
 
-      // Plain lines, in the same leading / trailing / absolute trio.
-      const leadLine = LEAD_LINE_RE.exec(line);
+      // Plain lines, in the same leading / trailing / absolute trio. Each may
+      // carry a slash on either end (see slashEnds); it is attached to the stored
+      // line, left off when absent so line equality in tests is unaffected.
+      const withSlash = (l: ReturnType<typeof db.addLine>, conn: string): typeof l => {
+        const slash = slashEnds(conn);
+        if (slash) l.slash = slash;
+        return l;
+      };
+
+      const leadLine = LEAD_LINE_RE.exec(lineBody);
       if (leadLine) {
         pushLineFrame(
-          db.addLine(enclosing(), leadLine[2].trim(), arrowType(leadLine[1]), parent),
+          withLabel(withSlash(db.addLine(enclosing(), leadLine[2].trim(), arrowType(leadLine[1]), parent), leadLine[1])),
         );
         continue;
       }
 
-      const trailLine = TRAIL_LINE_RE.exec(line);
+      const trailLine = TRAIL_LINE_RE.exec(lineBody);
       if (trailLine) {
         pushLineFrame(
-          db.addLine(trailLine[1].trim(), enclosing(), arrowType(trailLine[2]), parent),
+          withLabel(withSlash(db.addLine(trailLine[1].trim(), enclosing(), arrowType(trailLine[2]), parent), trailLine[2])),
         );
         continue;
       }
 
-      const absLine = ABS_LINE_RE.exec(line);
+      const absLine = ABS_LINE_RE.exec(lineBody);
       if (absLine) {
         pushLineFrame(
-          db.addLine(absLine[1].trim(), absLine[3].trim(), arrowType(absLine[2])),
+          withLabel(withSlash(db.addLine(absLine[1].trim(), absLine[3].trim(), arrowType(absLine[2])), absLine[2])),
         );
         continue;
       }
@@ -1200,7 +1258,7 @@ export const parser = {
     flushFrame(stack[0]);
 
     // Tree is complete: expand each complex line into one segment per arrow,
-    // carrying over any stroke/container/routing the complex line set.
+    // carrying over any stroke/container/routing/slash the complex line set.
     for (const generated of expandComplexLines(db.getEntities(), complexSpecs)) {
       const line = db.addLine(
         generated.source,
@@ -1208,6 +1266,8 @@ export const parser = {
         generated.type,
         generated.container ?? null,
       );
+      if (generated.slash) line.slash = generated.slash;
+      if (generated.label !== undefined) line.label = generated.label;
       if (generated.style) line.style = generated.style;
       if (generated.routing) line.routing = generated.routing;
     }

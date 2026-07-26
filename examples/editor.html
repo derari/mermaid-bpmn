@@ -62,7 +62,6 @@
         color: var(--hint);
       }
       .theme-toggle {
-        margin-left: auto;
         align-self: center;
         font: inherit;
         font-size: 0.8rem;
@@ -75,6 +74,46 @@
       }
       .theme-toggle:hover {
         border-color: var(--faint);
+      }
+      /* Download button + dropdown. The wrapper is pushed to the right with
+         margin-left:auto so the theme toggle sits next to it. */
+      .download {
+        margin-left: auto;
+        align-self: center;
+        position: relative;
+      }
+      .download-menu {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        min-width: 100%;
+        margin: 0;
+        padding: 0.25rem;
+        list-style: none;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel-bg);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        z-index: 10;
+      }
+      .download-menu[hidden] {
+        display: none;
+      }
+      .download-menu button {
+        display: block;
+        width: 100%;
+        text-align: left;
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.3rem 0.6rem;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--fg);
+        cursor: pointer;
+      }
+      .download-menu button:hover {
+        background: var(--border-faint);
       }
       main {
         flex: 1;
@@ -138,6 +177,15 @@
       <a class="nav" href="./index.html">[example gallery]</a>
       <a class="nav" href="https://github.com/derari/mermaid-bpmn#readme">[readme]</a>
       <span class="hint">Edit on the left — the diagram re-renders as you type.</span>
+      <div class="download">
+        <button id="download-toggle" class="theme-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+          ⬇ Download ▾
+        </button>
+        <ul id="download-menu" class="download-menu" hidden>
+          <li><button id="download-svg" type="button">SVG</button></li>
+          <li><button id="download-png" type="button">PNG</button></li>
+        </ul>
+      </div>
       <button id="theme-toggle" class="theme-toggle" type="button">🌙 Dark</button>
     </header>
     <main>
@@ -272,6 +320,7 @@
         # style element by id
         style e1 fill:#FFD8D8 stroke:#891A1A
 
+        # optional: use n/e/s/w to choose a side for boundary events
         error boundary | e
             Attached
             Intermediate
@@ -280,18 +329,24 @@
           style stroke:#891A1A
           --> sig-end
             # lines can be styled, too
+            # stroke and fill accept any valid html/css color expression
             style stroke:orange
 
      # apply style classes by id
      class Send Task important
 
      gate
+       # you can override the icon of every entity
+       style icon:bpmn:service
        # iconify image packs available in this editor:
        # lucide, fa, fa-brands, mdi, nonicons, devicon
        #
        # style icon:lucide:banana
-       --> Call Activity
-       --> x2
+
+       # default and labelled branches
+       /--> Call Activity
+       --> x2 "Condition"
+
      signal end sig-end "Signal \n End Event"
      call Call Activity
      gate x2 "Exclusive \n Gateway"
@@ -346,6 +401,118 @@
         render();
       }
       toggle.addEventListener('click', () => setTheme(theme === 'dark' ? 'light' : 'dark'));
+
+      // Download: the button drops down to SVG / PNG. Both work off whatever SVG
+      // is currently in the output pane, so a diagram must be rendered first.
+      const downloadToggle = document.getElementById('download-toggle');
+      const downloadMenu = document.getElementById('download-menu');
+
+      function openMenu(open) {
+        downloadMenu.hidden = !open;
+        downloadToggle.setAttribute('aria-expanded', String(open));
+      }
+      downloadToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openMenu(downloadMenu.hidden);
+      });
+      // Click outside or Escape closes the menu.
+      document.addEventListener('click', () => openMenu(false));
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') openMenu(false);
+      });
+
+      function triggerDownload(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        // Revoke on the next tick so the click's navigation has consumed the URL.
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
+
+      // Returns a standalone clone of the rendered SVG with an explicit width/height
+      // (mermaid sizes via a max-width style, which a bare download/canvas ignores)
+      // and the xmlns declaration a detached file needs. Returns null if nothing is
+      // rendered yet. `dims` is filled with the pixel size for the caller.
+      function serializeSvg(dims) {
+        const svg = output.querySelector('svg');
+        if (!svg) return null;
+        const clone = svg.cloneNode(true);
+
+        // Work out intrinsic pixel size: prefer the viewBox, fall back to the
+        // rendered bounding box.
+        let width, height;
+        const vb = svg.viewBox && svg.viewBox.baseVal;
+        if (vb && vb.width && vb.height) {
+          width = vb.width;
+          height = vb.height;
+        } else {
+          const rect = svg.getBoundingClientRect();
+          width = rect.width;
+          height = rect.height;
+        }
+        clone.setAttribute('width', width);
+        clone.setAttribute('height', height);
+        clone.style.maxWidth = '';
+        clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+
+        dims.width = width;
+        dims.height = height;
+        return new XMLSerializer().serializeToString(clone);
+      }
+
+      function downloadSvg() {
+        const markup = serializeSvg({});
+        if (!markup) return;
+        triggerDownload(
+          new Blob([markup], { type: 'image/svg+xml;charset=utf-8' }),
+          'diagram.svg',
+        );
+      }
+
+      // Rasterize the SVG onto a canvas. Icons are inlined as <path> elements, so
+      // nothing taints the canvas and toBlob works. A 2× scale keeps text crisp,
+      // and the background is filled with the theme colour since mermaid's SVG is
+      // transparent.
+      function downloadPng() {
+        const dims = {};
+        const markup = serializeSvg(dims);
+        if (!markup) return;
+        const scale = 2;
+        const img = new Image();
+        const svgUrl = URL.createObjectURL(
+          new Blob([markup], { type: 'image/svg+xml;charset=utf-8' }),
+        );
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(dims.width * scale);
+          canvas.height = Math.round(dims.height * scale);
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = getComputedStyle(document.body).backgroundColor;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(svgUrl);
+          canvas.toBlob((blob) => {
+            if (blob) triggerDownload(blob, 'diagram.png');
+          }, 'image/png');
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(svgUrl);
+          output.innerHTML = `<div class="error">Could not rasterize the diagram to PNG.</div>`;
+        };
+        img.src = svgUrl;
+      }
+
+      document.getElementById('download-svg').addEventListener('click', () => {
+        openMenu(false);
+        downloadSvg();
+      });
+      document.getElementById('download-png').addEventListener('click', () => {
+        openMenu(false);
+        downloadPng();
+      });
 
       setTheme('light');
     </script>

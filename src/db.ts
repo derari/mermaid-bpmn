@@ -228,6 +228,13 @@ export function entityLabel(entity: Entity): string {
 // source to the target; `<--` points the other way (target to source).
 export type LineType = '---' | '-->' | '<--';
 
+// A slash (a short diagonal tick) drawn across a line end, from a leading or
+// trailing `/` on the connector (`/--`, `--/`, `/-->`, `<--/`). `start` marks the
+// source end (a leading `/`), `end` the target end (a trailing `/`), and `both`
+// either end. In BPMN a slash near the source is the default-sequence-flow marker.
+// It is orthogonal to the arrow direction, so any `LineType` may carry one.
+export type SlashEnd = 'start' | 'end' | 'both';
+
 // A box side, in compass terms: north/east/south/west.
 export type Side = 'n' | 'e' | 's' | 'w';
 
@@ -266,9 +273,16 @@ export interface Line {
   source: Entity | string;
   target: Entity | string;
   type: LineType;
+  // A caption drawn along the connection, from a quoted label at the end of the
+  // line definition (`A --> B "text"`). Placed near the source. Undefined when
+  // none, so line equality in tests is unaffected.
+  label?: string;
   // Styles declared on the line by a `style` statement nested under it. Only
   // `stroke` is meaningful for a drawn line; undefined when none.
   style?: StyleProps;
+  // A slash decoration at one or both line ends, from a leading/trailing `/` on
+  // the connector. Undefined when none, so line equality in tests is unaffected.
+  slash?: SlashEnd;
   // The entity a relative line was written inside, whose stroke it inherits.
   // Undefined marks an absolute line, which instead inherits from the lowest
   // common ancestor of its endpoints (computed at render time).

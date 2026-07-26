@@ -81,6 +81,18 @@ const NODE_SPACING = 24; // gap between sibling boxes
 const LINE_CORNER_RADIUS = 10;
 const DIAGONAL_MIN_ANGLE = (20 * Math.PI) / 180;
 
+// A line-end slash tick (from a leading/trailing `/` connector — BPMN's
+// default-sequence-flow marker). SLASH_LEN is its drawn length; SLASH_INSET how
+// far along the line from the endpoint its centre sits, so it crosses the visible
+// line just inside the node rather than at the very tip (under an arrowhead).
+const SLASH_LEN = 11;
+const SLASH_INSET = 9;
+
+// A hand-placed line caption (only on a single-bridge line ELK can't label): how
+// far along the first run from the source its centre sits, and its gap off the line.
+const EDGE_LABEL_INSET = 8;
+const EDGE_LABEL_GAP = 5;
+
 // An activity is drawn as a slightly rounded rectangle (BPMN task shape). Its
 // activity type refines that outline: a `call` activity gets a bold (double
 // width) border; an `event-subprocess` a dotted one; a `transaction` a double
@@ -922,6 +934,13 @@ interface ConnStyle {
   messageFlow?: boolean;
   dataAssoc?: boolean;
   circle?: 'start' | 'end';
+  // A slash tick drawn at this drawn edge's start point and/or end point (from a
+  // leading/trailing `/` on the connector — the BPMN default-flow marker). A
+  // polyline is drawn source-point-first, so on a whole-line edge `slashStart`
+  // is the source end and `slashEnd` the target end; a manual route redistributes
+  // them onto the segment that touches each end (see applyManualRoute).
+  slashStart?: boolean;
+  slashEnd?: boolean;
 }
 
 function arrowFor(type: Line['type']): ArrowEnd {
@@ -939,6 +958,31 @@ function describeLine(line: Line): string {
   return `"${endpointName(line.source)} ${line.type} ${endpointName(line.target)}"`;
 }
 
+// A drawn ELK edge, as this pass builds it before layout. Kept minimal — ELK
+// fills in sections/label boxes — but wide enough to attach a label and options.
+interface DrawnEdge {
+  id: string;
+  sources: string[];
+  targets: string[];
+  labels?: { id: string; text: string; width: number; height: number }[];
+  layoutOptions?: Record<string, string>;
+}
+
+// Attaches a line's caption to its ELK edge as an edge label, sized from the
+// measured text and placed near the TAIL (source) end so it reads closer to the
+// source than the target. ELK reserves the room and positions the box; the draw
+// pass reads it back (see drawEdges). Called on whichever segment touches the
+// source, so a multi-segment (boundary-crossing) line labels its source side.
+function applyEdgeLabel(
+  edge: DrawnEdge,
+  text: string,
+  measure: (t: string) => number,
+): void {
+  const m = measureLabel(text, measure);
+  edge.labels = [{ id: `${edge.id}L`, text, width: m.width, height: m.height }];
+  (edge.layoutOptions ??= {})['org.eclipse.elk.edgeLabels.placement'] = 'TAIL';
+}
+
 // The hand-drawn bridge for a boundary-crossing line whose LCA mixes directions,
 // when the port chains (see planRoute) stop short of a common parent. It connects
 // the two outermost anchors — `from` on the source side, `to` on the target side.
@@ -949,6 +993,9 @@ interface ManualEdge {
   bend?: 'z' | 'n' | 'l' | 'auto';
   exitSide?: Side;
   enterSide?: Side;
+  // A line caption drawn near the source, only when the whole line is a single
+  // hand-drawn bridge (no ELK edge to hang an ELK label on). Pre-measured.
+  label?: { text: string; width: number; height: number };
 }
 
 // What the connection pass hands back: how to draw each ELK-routed edge (keyed
@@ -1060,6 +1107,11 @@ function addConnections(
       stroke: invalid ? undefined : lineStroke(line, lca, ctx, resolved),
       messageFlow,
       dataAssoc,
+      // A leading `/` marks the source (start) end, a trailing `/` the target
+      // (end) end. On a plain/flatten edge (drawn source → target) these land
+      // directly; a manual route redistributes them per segment below.
+      slashStart: line.slash === 'start' || line.slash === 'both',
+      slashEnd: line.slash === 'end' || line.slash === 'both',
     };
     // For a single (plain/flatten) edge the path runs source → target, so the
     // origin circle sits opposite the arrowhead: at the start for --> / ---, at the
@@ -1120,7 +1172,7 @@ function addConnections(
     });
 
     if (plan.kind === 'manual') {
-      applyManualRoute(plan, style, ctx, container, styles, manualEdges);
+      applyManualRoute(plan, style, ctx, container, styles, manualEdges, line.label);
       return;
     }
 
@@ -1129,7 +1181,11 @@ function addConnections(
     }
     if (plan.kind === 'flatten') hierarchyContainers.add(container);
 
-    (container.edges ??= []).push({ id, sources: [sourceId], targets: [targetId] });
+    // A single (plain/flatten) edge runs source → target, so its own label sits at
+    // the source end (placement TAIL). ELK reserves room and positions it.
+    const edge: DrawnEdge = { id, sources: [sourceId], targets: [targetId] };
+    if (line.label !== undefined) applyEdgeLabel(edge, line.label, ctx.measure);
+    (container.edges ??= []).push(edge);
     styles.set(id, style);
     connected.add(sourceId);
     connected.add(targetId);
@@ -1148,6 +1204,7 @@ function applyManualRoute(
   lcaContainer: ElkNode,
   styles: Map<string, ConnStyle>,
   manualEdges: ManualEdge[],
+  label?: string,
 ): void {
   const addPort = (p: PortSpec): void => {
     const container = ctx.nodeById.get(p.containerId);
@@ -1176,10 +1233,37 @@ function applyManualRoute(
       : 'end'
     : undefined;
 
+  // The slash ticks are placed like the origin circle, but independently per end.
+  // A source-end slash sits at the source endpoint — the START of the source
+  // chain's first segment, or the join's start when that side grew no chain. A
+  // target-end slash sits at the target endpoint — the START of the target chain's
+  // first segment (a chain's touch segment runs endpoint → port), or the join's
+  // end. Both touch segments start AT their endpoint, so a slash there is a start.
+  const srcTouch = plan.source.segments[0];
+  const tgtTouch = plan.target.segments[0];
+  const srcSlashSegId = style.slashStart && srcTouch ? srcTouch.id : undefined;
+  const tgtSlashSegId = style.slashEnd && tgtTouch ? tgtTouch.id : undefined;
+  const joinSlashStart = !!style.slashStart && !srcTouch;
+  const joinSlashEnd = !!style.slashEnd && !tgtTouch;
+
+  // The label rides on whichever ELK edge is nearest the source: the source
+  // chain's touch segment, else the ELK join, else the target chain's — so it
+  // stays close to the source. When the whole line is a single bridge (no ELK
+  // edge at all), it is drawn by hand near the source instead (see below).
+  const carrierId =
+    srcTouch?.id ?? (plan.join.kind === 'elk' ? plan.join.id : undefined) ?? tgtTouch?.id;
+  // Pre-measured caption for the bridge fallback (when no ELK carrier exists).
+  const bridgeLabel =
+    label !== undefined && carrierId === undefined
+      ? ((m) => ({ text: label, width: m.width, height: m.height }))(measureLabel(label, ctx.measure))
+      : undefined;
+
   const addSegment = (s: { id: string; from: string; to: string; container: string; arrow: ArrowEnd }): void => {
     const container = ctx.nodeById.get(s.container);
     if (!container) return;
-    (container.edges ??= []).push({ id: s.id, sources: [s.from], targets: [s.to] });
+    const edge: DrawnEdge = { id: s.id, sources: [s.from], targets: [s.to] };
+    if (label !== undefined && s.id === carrierId) applyEdgeLabel(edge, label, ctx.measure);
+    (container.edges ??= []).push(edge);
     styles.set(s.id, {
       arrow: s.arrow,
       invalid: style.invalid,
@@ -1187,6 +1271,7 @@ function applyManualRoute(
       messageFlow: style.messageFlow,
       dataAssoc: style.dataAssoc,
       circle: s.id === circleSegId ? 'start' : undefined,
+      slashStart: s.id === srcSlashSegId || s.id === tgtSlashSegId,
     });
   };
 
@@ -1196,11 +1281,15 @@ function applyManualRoute(
   for (const s of plan.target.segments) addSegment(s);
 
   if (plan.join.kind === 'elk') {
-    (lcaContainer.edges ??= []).push({
+    const joinEdge: DrawnEdge = {
       id: plan.join.id,
       sources: [plan.join.from],
       targets: [plan.join.to],
-    });
+    };
+    if (label !== undefined && plan.join.id === carrierId) {
+      applyEdgeLabel(joinEdge, label, ctx.measure);
+    }
+    (lcaContainer.edges ??= []).push(joinEdge);
     styles.set(plan.join.id, {
       arrow: plan.join.arrow,
       invalid: style.invalid,
@@ -1208,6 +1297,8 @@ function applyManualRoute(
       messageFlow: style.messageFlow,
       dataAssoc: style.dataAssoc,
       circle: joinCircle,
+      slashStart: joinSlashStart,
+      slashEnd: joinSlashEnd,
     });
   } else {
     manualEdges.push({
@@ -1220,10 +1311,15 @@ function applyManualRoute(
         messageFlow: style.messageFlow,
         dataAssoc: style.dataAssoc,
         circle: joinCircle,
+        slashStart: joinSlashStart,
+        slashEnd: joinSlashEnd,
       },
       bend: plan.join.bend,
       exitSide: plan.join.exitSide,
       enterSide: plan.join.enterSide,
+      // No ELK edge exists on the source side to carry an ELK label, so the whole
+      // line's caption is drawn by hand near the source (see the bridge draw pass).
+      label: bridgeLabel,
     });
   }
 }
@@ -1264,9 +1360,19 @@ interface ElkEdgeSection {
   endPoint: { x: number; y: number };
   bendPoints?: { x: number; y: number }[];
 }
+// A laid-out edge label: its box (relative to the edge's container, like the
+// section points) and text, filled in by ELK for labelled edges.
+interface ElkEdgeLabel {
+  text?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
 interface LaidEdge {
   id: string;
   sections?: ElkEdgeSection[];
+  labels?: ElkEdgeLabel[];
 }
 
 // The arrowhead markers for one diagram. `valid` and `invalid` are the shared
@@ -1368,11 +1474,50 @@ function drawEdges(
     }));
     clipEndsToGates(pts, gates);
     drawEdgePolyline(svg, pts, style, markers);
+
+    // An ELK-placed line caption: its box is relative to this edge's container,
+    // like the section points, so it shares the same origin.
+    for (const lbl of edge.labels ?? []) {
+      if (lbl.text) {
+        drawEdgeLabel(
+          svg,
+          originX + (lbl.x ?? 0),
+          originY + (lbl.y ?? 0),
+          lbl.width ?? 0,
+          lbl.height ?? 0,
+          lbl.text,
+        );
+      }
+    }
   }
 
   for (const child of node.children ?? []) {
     drawEdges(svg, child, originX, originY, styles, markers, gates);
   }
+}
+
+// Draws a line caption inside its laid-out (or hand-placed) box, centred and with
+// a transparent background. `x`/`y` are the box's top-left in absolute space.
+function drawEdgeLabel(
+  svg: SVGSVGElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  text: string,
+): void {
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+  const lines = text.split('\n');
+  const t = svgEl('text', {
+    x: cx,
+    y: cy,
+    'text-anchor': 'middle',
+    'dominant-baseline': 'central',
+    class: 'bpmn-label',
+  });
+  fillLabelLines(t, lines, cx, centeredFirstDy(lines.length));
+  svg.appendChild(t);
 }
 
 // Draws one connection line as a rounded <path>: the `bpmn-edge` class (plus
@@ -1419,6 +1564,44 @@ function drawEdgePolyline(
     line.setAttribute(end, `url(#${circleId})`);
   }
   svg.appendChild(line);
+
+  // Slash ticks are drawn as their own short <line>s (not SVG markers) so they
+  // never contend with the arrowhead/origin-circle markers for the same end, and
+  // so their 45° angle is taken from the polyline's own first/last run. `shaped`
+  // is source-point-first, so its start is `slashStart` and its end `slashEnd`.
+  if ((style.slashStart || style.slashEnd) && shaped.length >= 2) {
+    const n = shaped.length;
+    if (style.slashStart) svg.appendChild(slashMark(shaped[0], shaped[1], style.stroke));
+    if (style.slashEnd) svg.appendChild(slashMark(shaped[n - 1], shaped[n - 2], style.stroke));
+  }
+}
+
+// A short diagonal tick across a line end (a leading/trailing `/` connector —
+// BPMN's default-sequence-flow marker when at the source). `end` is the endpoint
+// the tick sits near; `inward` the next polyline point, giving the flow direction.
+// The tick's centre is set SLASH_INSET inside the endpoint and its own direction is
+// the flow rotated 45°, so it reads as a slash crossing the line.
+function slashMark(end: Pt, inward: Pt, stroke?: string): SVGLineElement {
+  const dx = inward.x - end.x;
+  const dy = inward.y - end.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  const cx = end.x + ux * SLASH_INSET;
+  const cy = end.y + uy * SLASH_INSET;
+  // Flow direction rotated +45° (cos45 = sin45 = SQRT1_2).
+  const rx = (ux - uy) * Math.SQRT1_2;
+  const ry = (ux + uy) * Math.SQRT1_2;
+  const h = SLASH_LEN / 2;
+  const mark = svgEl('line', {
+    x1: cx - rx * h,
+    y1: cy - ry * h,
+    x2: cx + rx * h,
+    y2: cy + ry * h,
+    class: 'bpmn-edge-slash',
+  });
+  if (stroke) mark.setAttribute('style', `stroke:${stroke}`);
+  return mark;
 }
 
 // An axis-aligned rectangle in absolute diagram coordinates.
@@ -2737,6 +2920,30 @@ export const renderer = {
           );
           clipEndsToGates(pts, gateBoxes);
           drawEdgePolyline(svg, pts, edge.style, markers);
+          // A single-bridge line has no ELK edge to carry its caption, so place it
+          // by hand near the source: a little in along the first run, offset to the
+          // side so it sits beside the line rather than on it.
+          if (edge.label && pts.length >= 2) {
+            const p0 = pts[0];
+            const p1 = pts[1];
+            const dx = p1.x - p0.x;
+            const dy = p1.y - p0.y;
+            const len = Math.hypot(dx, dy) || 1;
+            const ux = dx / len;
+            const uy = dy / len;
+            const along = EDGE_LABEL_INSET + edge.label.width / 2;
+            const off = edge.label.height / 2 + EDGE_LABEL_GAP;
+            const cx = p0.x + ux * along - uy * off;
+            const cy = p0.y + uy * along + ux * off;
+            drawEdgeLabel(
+              svg,
+              cx - edge.label.width / 2,
+              cy - edge.label.height / 2,
+              edge.label.width,
+              edge.label.height,
+              edge.label.text,
+            );
+          }
         }
       }
     }
