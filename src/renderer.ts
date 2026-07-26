@@ -1017,6 +1017,10 @@ interface EndpointRef {
   owner: string;
   isPort: boolean;
   entity: Entity;
+  // The border side a fixed port sits on (declared `port` or a pool port). The
+  // bridge must attach along this edge's axis, so it overrides the auto exit/enter
+  // side when this endpoint is fixed. Undefined for a plain (non-port) endpoint.
+  portSide?: Side;
 }
 
 // Resolves a line endpoint entity to its ELK/owner ids, or null when it is
@@ -1027,7 +1031,7 @@ function resolveEndpoint(entity: Entity | undefined, ctx: BuildCtx): EndpointRef
   if (!entity) return null;
   const port = ctx.ports.get(entity);
   if (port) {
-    return { elk: port.portId, owner: port.containerId, isPort: true, entity };
+    return { elk: port.portId, owner: port.containerId, isPort: true, entity, portSide: port.side };
   }
   const id = ctx.idOf.get(entity);
   if (!id) return null;
@@ -1145,7 +1149,7 @@ function addConnections(
         layoutOptions: { 'elk.port.side': ELK_PORT_SIDE[side] },
       });
       (pool.layoutOptions ??= {})['elk.portConstraints'] = 'FIXED_SIDE';
-      return { ...ref, elk: portId, isPort: true };
+      return { ...ref, elk: portId, isPort: true, portSide: side };
     };
     const srcRef = poolPortEndpoint(source, 's', exitSide);
     const tgtRef = poolPortEndpoint(target, 't', enterSide);
@@ -1163,6 +1167,8 @@ function addConnections(
       targetOwner: tgtRef.owner,
       sourceFixed: srcRef.isPort,
       targetFixed: tgtRef.isPort,
+      sourcePortSide: srcRef.portSide,
+      targetPortSide: tgtRef.portSide,
       lca,
       lcaDir,
       lineType: line.type,

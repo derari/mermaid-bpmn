@@ -266,9 +266,9 @@ quoted label to draw a caption. A `port` never carries a label.
 
 #### Line breaks and multi-line labels
 
-Inside a quoted label a literal `\n` forces a **line break**, and the whitespace
-flanking it is gobbled, so `"Charge  \n  the card"` draws as two lines with no
-stray spaces. (Write `\\n` — an escaped backslash then `n` — for a literal `\n`.)
+Inside a quoted label a literal `\ ` (backslash + space) forces a **line break**, and the whitespace
+flanking it is gobbled, so `"Charge  \  the card"` draws as two lines with no
+stray spaces.
 
 For a longer caption, drop the quotes and end the declaration with a `|` marker;
 the label is then the block of **more-indented lines** that follow. The first such

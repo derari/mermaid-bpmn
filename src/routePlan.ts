@@ -176,6 +176,12 @@ export interface RouteInput {
   // pinned at depth 0) and anchors on the port point; the OTHER side chains to it.
   sourceFixed?: boolean;
   targetFixed?: boolean;
+  // The border side a fixed endpoint's port sits on. A fixed port is physically
+  // pinned to this edge, so a hand-drawn bridge must attach along its axis — it
+  // overrides the auto/geometry exit (source) or enter (target) side, which was
+  // derived from the LCA's flow and is unrelated to where the port actually sits.
+  sourcePortSide?: Side;
+  targetPortSide?: Side;
   lca: string;
   lcaDir: Direction;
   lineType: LineType;
@@ -274,6 +280,13 @@ export function planRoute(input: RouteInput): RoutePlan {
   const source = planChain(`${connId}s`, sourceId, sourceOwner, depthSrc, srcND, exitSide, sourceFixed);
   const target = planChain(`${connId}t`, targetId, targetOwner, depthTgt, tgtND, enterSide, targetFixed);
 
+  // A fixed port is pinned to a real border edge; the bridge must attach along that
+  // edge (its axis drives the z/n/L choice in orthogonalPoints), not along the auto
+  // exit/enter side the flow direction produced. A free (non-fixed) side keeps the
+  // resolved side, which is also where its chain's outer port was placed.
+  const joinExitSide = sourceFixed && input.sourcePortSide ? input.sourcePortSide : exitSide;
+  const joinEnterSide = targetFixed && input.targetPortSide ? input.targetPortSide : enterSide;
+
   // The head sits on whichever segment touches the line's arrow end. A chain's
   // touch segment runs endpoint -> port, so the endpoint is that polyline's START
   // point; hence a head there is `start`. When a side has no chain, the head goes
@@ -290,7 +303,7 @@ export function planRoute(input: RouteInput): RoutePlan {
   const join: JoinPlan =
     source.reachesLca && target.reachesLca
       ? { kind: 'elk', id: `${connId}j`, from: source.endpoint, to: target.endpoint, container: lca, arrow: joinArrow }
-      : { kind: 'bridge', from: source.anchor, to: target.anchor, arrow: joinArrow, bend, exitSide, enterSide };
+      : { kind: 'bridge', from: source.anchor, to: target.anchor, arrow: joinArrow, bend, exitSide: joinExitSide, enterSide: joinEnterSide };
 
   return { kind: 'manual', source, target, join };
 }

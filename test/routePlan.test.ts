@@ -445,4 +445,45 @@ describe('planRoute with a declared-port endpoint', () => {
       to: { kind: 'port', portId: 'n1.0.port0' },
     });
   });
+
+  it('a fixed port pins the bridge to its declared side, overriding the auto exit/enter side', () => {
+    // The reported bug: both ports sit on the WEST border, but the auto exit/enter
+    // side (derived from the mixed LCA's flow) is n/s — perpendicular to reality,
+    // so the bridge got a VHV instead of the HVH the two horizontal ports need.
+    // With the declared sides fed in, the bridge attaches along the ports' own axis.
+    const plan = planRoute({
+      ...base,
+      sourceId: 'n0.port0',
+      sourceOwner: 'n0',
+      sourceFixed: true,
+      sourcePortSide: 'w',
+      targetId: 'n1.0.port0',
+      targetOwner: 'n1.0',
+      targetFixed: true,
+      targetPortSide: 'w',
+    });
+    if (plan.kind !== 'manual' || plan.join.kind !== 'bridge') throw new Error('bridge');
+    expect(plan.join.exitSide).toBe('w');
+    expect(plan.join.enterSide).toBe('w');
+  });
+
+  it('pins each fixed end independently and leaves a free end on its resolved side', () => {
+    // Source is a fixed north port; target is a free node that chains out. The
+    // fixed side takes its own side ('n'); the free side keeps the auto enter side.
+    const plan = planRoute({
+      ...base,
+      sourceId: 'n0.port0',
+      sourceOwner: 'n0',
+      sourceFixed: true,
+      sourcePortSide: 'n',
+      targetId: 'n1.0',
+      targetOwner: 'n1.0',
+      targetFixed: false,
+    });
+    if (plan.kind !== 'manual' || plan.join.kind !== 'bridge') throw new Error('bridge');
+    expect(plan.join.exitSide).toBe('n'); // the port's own side, not the auto exit
+    // The free target keeps the auto enter side (facing the auto exit, unaffected
+    // by the source port's declared side). Here the auto exit is 's' → enter 'n'.
+    expect(plan.join.enterSide).toBe(resolveEnterSide(undefined, resolveExitSide(undefined, 'n0', 'n1.0', '', 'TB')));
+  });
 });

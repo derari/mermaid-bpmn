@@ -256,7 +256,7 @@
   classDef important fill:#FFE2D8
 
   # declare entities with
-  # [entity type] [id?] ["label"?] [:::class]
+  # [entity type] [id?] ["label"?] [:::class?]
   pool P1 "Pool (Black Box)" :::bg-pool
 
   # for most entities, label defaults to id
@@ -269,8 +269,8 @@
       P1 --> s1
       d1 --- s1
 
-      data object d1 "Data \n Object"
-      subprocess "Collapsed \n Subprocess"
+      data object d1 "Data\ Object"
+      subprocess "Collapsed\ Subprocess"
         # use relative lines to connect the current entity
         --> P1
 
@@ -279,8 +279,8 @@
         --> t1
 
       # steps without successor will be linked with auto-sequence
-      timer catch t1 "Timer \n Intermediate \n Event"
-      escalation "Escalation \n End Event"
+      timer catch t1 "Timer\ Intermediate\ Event"
+      escalation "Escalation\ End Event"
       receive task Receive Task
         P1 -->
 
@@ -288,8 +288,8 @@
         auto-sequence off
         # change layout direction
         direction TB
-        task Task
-        task Task
+        user task
+        service task
         timer boundary
           --> Manual Task
 
@@ -307,15 +307,15 @@
     lane Lane 2 :::bg-lane
       link catch
       catch
-      data store "Data \n Store"
+      data store "Data\ Store"
         --> Subprocess
       subprocess Subprocess
         start Start Event
-        loop subprocess "Looped \n Subprocess"
+        loop subprocess "Looped\ Subprocess"
         end "End Event"
         event-subprocess Event Subprocess
-          conditional start "Conditional \n Start Event"
-          error e1 "Error End \n Event"
+          conditional start "Conditional\ Start Event"
+          error e1 "Error End\ Event"
 
         # style element by id
         style e1 fill:#FFD8D8 stroke:#891A1A
@@ -332,36 +332,38 @@
             # stroke and fill accept any valid html/css color expression
             style stroke:orange
 
-     # apply style classes by id
-     class Send Task important
+      # apply style classes by id
+      class Send Task important
 
-     gate
-       # you can override the icon of every entity
-       style icon:bpmn:service
-       # iconify image packs available in this editor:
-       # lucide, fa, fa-brands, mdi, nonicons, devicon
-       #
-       # style icon:lucide:banana
+      gate
+        # you can override the icon of every entity
+        style icon:bpmn:service
+        # iconify image packs available in this editor:
+        # lucide, fa, fa-brands, mdi, nonicons, devicon
+        #
+        # style icon:lucide:banana
 
-       # default and labelled branches
-       /--> Call Activity
-       --> x2 "Condition"
+        # default and labelled branches
+        /--> Call Activity
+        --> x2 "Condition"
 
-     signal end sig-end "Signal \n End Event"
-     call Call Activity
-     gate x2 "Exclusive \n Gateway"
-     parallel gate "Parallel \n Gateway"
-       --> pt
-       --> Send Task
-     group Group
-       parallel task pt |
-           Multi Instance
-           Task (Parallel)
-         --> p2
-       send task Send Task
-         --> p2
-     parallel gate p2
-     message end "Message \n End Event"
+      signal end sig-end "Signal\ End Event"
+      call Call Activity
+      gate x2 "Exclusive\ Gateway"
+      parallel gate "Parallel\ Gateway"
+        --> pt
+        --> Send Task
+      comment Text Annotation
+        Group ---
+      group Group
+        parallel task pt |
+            Multi Instance
+            Task (Parallel)
+          --> p2
+        send task Send Task
+          --> p2
+      parallel gate p2
+      message end "Message\ End Event"
 `;
 
       const source = document.getElementById('source');

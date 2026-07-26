@@ -83,7 +83,7 @@ const LABEL_RE = /"((?:[^"\\]|\\.)*)"/;
 // gobbled so `"a  \n  b"` reads as `a`\n`b` with no stray leading/trailing spaces.
 // `\s` spans real newlines too, so the same rule tidies a `\n` written amid the
 // lines of a multi-line (`|`) label. Applied to every label, quoted or multi-line.
-const NEWLINE_ESCAPE_RE = /\s*\\n\s*/g;
+const NEWLINE_ESCAPE_RE = /\s*\\[n\s]\s*/g;
 function applyNewlineEscapes(text: string): string {
   return text.replace(NEWLINE_ESCAPE_RE, '\n');
 }
@@ -92,7 +92,7 @@ function applyNewlineEscapes(text: string): string {
 // literal quote/backslash, and a `\n` (whitespace-gobbled) becomes a line break.
 // Doing it in a single scan keeps `\\n` (an escaped backslash then `n`) a literal
 // `\n` rather than a newline.
-const QUOTED_LABEL_RE = /\s*\\n\s*|\\(["\\])/g;
+const QUOTED_LABEL_RE = /\s*\\[n\s]\s*|\\(["\\])/g;
 function unescapeQuotedLabel(text: string): string {
   return text.replace(QUOTED_LABEL_RE, (_m, escaped: string | undefined) =>
     escaped === undefined ? '\n' : escaped,
