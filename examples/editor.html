@@ -310,17 +310,23 @@
       data store "Data\ Store"
         --> Subprocess
       subprocess Subprocess tb
+        # If you have complex layouts with changes of layout direction,
+        # the route and region keywords can help to improve the result.
+        # See the example gallery for usage
+        route depth:1
         region lr
           start Start Event
           loop subprocess "Looped\ Subprocess"
           end "End Event"
 
-        event-subprocess Event Subprocess lr
+        event subprocess Event Subprocess lr
           conditional start "Conditional\ Start Event"
           error e1 "Error End\ Event"
 
         # style element by id
         style e1 fill:#FFD8D8 stroke:#891A1A
+        # apply style classes by id
+        class Send Task important
 
         # optional: use n/e/s/w to choose a side for boundary events
         error boundary | e
@@ -333,11 +339,10 @@
             # lines can be styled, too
             # stroke and fill accept any valid html/css color expression
             style stroke:orange
+        --> x
 
-      # apply style classes by id
-      class Send Task important
-
-      gate
+     region
+      gate x
         # you can override the icon of every entity
         style icon:bpmn:service
         # iconify image packs available in this editor:
@@ -365,7 +370,7 @@
         send task Send Task
           --> p2
       parallel gate p2
-      message end "Message\ End Event"
+      message end "Message\\ End Event"
 `;
 
       const source = document.getElementById('source');

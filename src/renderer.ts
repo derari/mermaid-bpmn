@@ -2043,6 +2043,46 @@ function regionsFirst(nodes: ElkNode[], types: Map<string, EntityType>): ElkNode
   return [...regions, ...nodes.filter((n) => !isRegion(n))];
 }
 
+// Extends every root pool that shares a flow direction to a common length — the
+// longest in that group — along its flow axis, the same way a pool stretches all
+// its lanes to one length. ELK sizes each pool to its own content, so a stack of
+// pools ends up ragged; here we read those laid-out lengths, pin the shorter pools
+// to the group maximum as a minimum size, and report whether anything changed so
+// the caller can lay the graph out once more (letting ELK re-place the content and
+// re-align the stack). Pools of different directions are grown independently — an
+// LR pool matches other LR pools' widths, a TB pool other TB pools' heights.
+function equalisePoolLengths(laid: ElkNode, ctx: BuildCtx): boolean {
+  const pools = (laid.children ?? []).filter((n) => ctx.types.get(n.id as string) === 'pool');
+  if (pools.length < 2) return false;
+  const isHorizontal = (n: ElkNode): boolean => {
+    const flow = ctx.flowById.get(n.id as string) ?? 'TB';
+    return flow === 'LR' || flow === 'RL';
+  };
+  const flowLen = (n: ElkNode): number => (isHorizontal(n) ? n.width ?? 0 : n.height ?? 0);
+  // The longest pool per flow direction (its flow-axis extent).
+  const maxByFlow = new Map<Direction, number>();
+  for (const p of pools) {
+    const flow = ctx.flowById.get(p.id as string) ?? 'TB';
+    maxByFlow.set(flow, Math.max(maxByFlow.get(flow) ?? 0, flowLen(p)));
+  }
+  let changed = false;
+  for (const p of pools) {
+    const flow = ctx.flowById.get(p.id as string) ?? 'TB';
+    const target = maxByFlow.get(flow) ?? 0;
+    // Already the longest (allow for sub-pixel rounding) — leave it alone.
+    if (flowLen(p) >= target - 0.5) continue;
+    // Pin the flow axis to the group maximum; keep the cross axis as laid (a
+    // MINIMUM_SIZE floor never shrinks it, and content can still grow it).
+    const minW = isHorizontal(p) ? target : p.width ?? 0;
+    const minH = isHorizontal(p) ? p.height ?? 0 : target;
+    const opts = (p.layoutOptions ??= {}) as Record<string, string>;
+    opts['elk.nodeSize.constraints'] = 'MINIMUM_SIZE';
+    opts['elk.nodeSize.minimum'] = `(${minW},${minH})`;
+    changed = true;
+  }
+  return changed;
+}
+
 // Builds a nested <svg> holding one resolved icon, positioned at (x, y) at the
 // given size. `currentColor` in the body picks up the `.bpmn-icon` text color.
 function iconEl(icon: IconSvg, x: number, y: number, size: number): SVGElement {
@@ -2821,9 +2861,19 @@ export const renderer = {
         rootChildren.push(toElkNode(entity, `n${i}`, direction, ctx, true));
       }
     });
+    const rootOpts = containerOptions(rootLayoutDir, CONTAINER_PAD);
+    if (rootHasPools) {
+      // Pools are swimlanes: they must stack in a straight, aligned column (or row),
+      // sharing a cross-axis origin regardless of the message flows running between
+      // them. ELK's default node placement (Brandes-Köpf) shifts a pool sideways to
+      // shorten those cross-pool edges, which breaks the alignment; SIMPLE placement
+      // stacks each pool flush at the layer origin instead, so same-orientation pools
+      // line up. Edges are still routed — just not at the cost of the stack.
+      rootOpts['elk.layered.nodePlacement.strategy'] = 'SIMPLE';
+    }
     const graph: ElkNode = {
       id: 'root',
-      layoutOptions: containerOptions(rootLayoutDir, CONTAINER_PAD),
+      layoutOptions: rootOpts,
       children: rootChildren,
       edges: [],
     };
@@ -2859,7 +2909,15 @@ export const renderer = {
       if (r) resolvedById.set(nodeId, r);
     }
 
-    const laid = await elk.layout(graph);
+    let laid = await elk.layout(graph);
+
+    // Pools that share a flow direction are stretched to a common length so a stack
+    // of them lines up flush (like a pool's lanes). This needs the laid-out lengths,
+    // so it runs after the first layout and, when it pins any pool, lays out once
+    // more — ELK then re-places each pool's content and re-aligns the stack.
+    if (equalisePoolLengths(laid, ctx)) {
+      laid = await elk.layout(graph);
+    }
 
     // Resolve any referenced icons to inline SVG (loading lazy packs on the way).
     // Skipped entirely when the diagram uses none.

@@ -210,6 +210,87 @@ describe('routing (real ELK)', () => {
     expect(Number(pools[0].attrs.x)).not.toBe(Number(pools[1].attrs.x));
   });
 
+  it('keeps stacked pools aligned even when message flows run between them', async () => {
+    // Regression: cross-pool edges tempt ELK's default (Brandes-Köpf) node placement
+    // to slide a pool sideways to shorten them, breaking the swimlane stack. The
+    // pools must still share a cross-axis origin (same x for a vertical stack).
+    await render(
+      [
+        'bpmn',
+        '  pool P1',
+        '  pool',
+        '    lane',
+        '      task',
+        '        --> P1',
+        '      task',
+        '        --> P1',
+      ].join('\n'),
+    );
+    const pools = findRect('bpmn-pool');
+    expect(pools.length).toBe(2);
+    expect(Number(pools[0].attrs.x)).toBe(Number(pools[1].attrs.x));
+    expect(Number(pools[0].attrs.y)).not.toBe(Number(pools[1].attrs.y));
+  });
+
+  it('extends same-direction pools to a common length (LR → equal widths, aligned)', async () => {
+    // Two LR pools of different content lengths. ELK sizes each to its own content
+    // (and centres the shorter one), leaving the stack ragged; they must be pulled
+    // to the longest pool's width and left-aligned, the way lanes share one length.
+    await render(
+      [
+        'bpmn LR',
+        '  pool Long',
+        '    lane L1',
+        '      task A',
+        '      task B',
+        '      task C',
+        '      A --> B',
+        '      B --> C',
+        '  pool Short',
+        '    lane L2',
+        '      task E',
+      ].join('\n'),
+    );
+    const pools = findRect('bpmn-pool');
+    expect(pools.length).toBe(2);
+    // Equal width (the longest) and a shared left edge — right edges line up.
+    expect(Number(pools[0].attrs.width)).toBe(Number(pools[1].attrs.width));
+    expect(Number(pools[0].attrs.x)).toBe(Number(pools[1].attrs.x));
+    // The stretch is real: the short pool grew past its lone task's width.
+    expect(Number(pools[1].attrs.width)).toBeGreaterThan(150);
+  });
+
+  it('extends only pools that share a direction (a lone TB pool keeps its own length)', async () => {
+    // Two LR pools and one TB pool. The LR pair equalises to a common width; the
+    // TB pool is the only one of its direction, so its height is left untouched.
+    await render(
+      [
+        'bpmn LR',
+        '  pool H1 LR',
+        '    lane a',
+        '      task A',
+        '      task B',
+        '      A --> B',
+        '  pool H2 LR',
+        '    lane b',
+        '      task C',
+        '  pool V1 TB',
+        '    lane c',
+        '      task D',
+        '      task E',
+        '      D --> E',
+      ].join('\n'),
+    );
+    const pools = findRect('bpmn-pool');
+    expect(pools.length).toBe(3);
+    const [h1, h2, v1] = pools;
+    // The two LR pools match widths…
+    expect(Number(h1.attrs.width)).toBe(Number(h2.attrs.width));
+    // …while the lone TB pool keeps a height driven by its own two stacked tasks,
+    // taller than the single-row LR pools (i.e. it was not forced to their length).
+    expect(Number(v1.attrs.height)).toBeGreaterThan(Number(h1.attrs.height));
+  });
+
   it('reverses a reversed pool\'s lane order (RL flow → BT lane stack, sign preserved)', async () => {
     // The pool→lane toggle preserves the sign: an RL pool stacks its lanes along BT,
     // so they still stack vertically but the first-declared lane sits at the BOTTOM

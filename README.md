@@ -147,6 +147,8 @@ bpmn LR
 ````
 
 Lanes are stretched to a common length so they tile the pool edge to edge.
+Likewise, pools that share a flow direction are stretched to a common length —
+the longest of the group — so a stack of them lines up flush rather than ragged.
 
 ### Gateways
 
