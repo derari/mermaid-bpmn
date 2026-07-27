@@ -166,6 +166,11 @@ const OUTSIDE_LABEL_GAP = 6; // spacing between the shape and its outside captio
 const TEXT_BRACKET_CAP = 12;
 const TEXT_BRACKET_STROKE = 2;
 
+// Under the `debug ports` overlay, every hand-routed (manual) line is forced to
+// this blue so it stands out from the ELK-routed lines (which keep their theme
+// color) — matching the red/green port squares the same overlay draws.
+const DEBUG_MANUAL_STROKE = '#2962ff';
+
 // Icons (see icons.ts). An inline icon is drawn at one line height, before the
 // label; a box with neither label nor children draws its icon alone at twice that
 // (an icon-only glyph). `ICON_GAP` sits between an inline icon and its label.
@@ -354,6 +359,9 @@ interface BuildCtx {
   // Every declared port's id, so the debug overlay can tint them apart from the
   // (red) routing ports.
   declaredPortIds: Set<string>;
+  // The root-only `debug ports` overlay flag. The connection pass reads it to
+  // force hand-routed lines blue (see applyManualRoute).
+  debugPorts: boolean;
   // Boundary events attached to an activity, by the ELK port id they became. The
   // draw pass reads this to draw the event circle (its glyph, its dashed/double
   // ring) centred on the host's border at the port's laid-out position, and to
@@ -1212,6 +1220,11 @@ function applyManualRoute(
   manualEdges: ManualEdge[],
   label?: string,
 ): void {
+  // The stroke every piece of this hand-routed line draws with. Normally the
+  // line's own stroke, but under the `debug ports` overlay it is forced blue so
+  // manual routes stand out from the ELK-routed lines.
+  const stroke = ctx.debugPorts ? DEBUG_MANUAL_STROKE : style.stroke;
+
   const addPort = (p: PortSpec): void => {
     const container = ctx.nodeById.get(p.containerId);
     if (!container) return;
@@ -1273,7 +1286,7 @@ function applyManualRoute(
     styles.set(s.id, {
       arrow: s.arrow,
       invalid: style.invalid,
-      stroke: style.stroke,
+      stroke,
       messageFlow: style.messageFlow,
       dataAssoc: style.dataAssoc,
       circle: s.id === circleSegId ? 'start' : undefined,
@@ -1299,7 +1312,7 @@ function applyManualRoute(
     styles.set(plan.join.id, {
       arrow: plan.join.arrow,
       invalid: style.invalid,
-      stroke: style.stroke,
+      stroke,
       messageFlow: style.messageFlow,
       dataAssoc: style.dataAssoc,
       circle: joinCircle,
@@ -1313,7 +1326,7 @@ function applyManualRoute(
       style: {
         arrow: plan.join.arrow,
         invalid: style.invalid,
-        stroke: style.stroke,
+        stroke,
         messageFlow: style.messageFlow,
         dataAssoc: style.dataAssoc,
         circle: joinCircle,
@@ -2793,6 +2806,7 @@ export const renderer = {
       dataTypeById: new Map(),
       ports: new Map(),
       declaredPortIds: new Set(),
+      debugPorts: db.getDebugPorts(),
       boundaryEvents: new Map(),
       boundaryAutoSide: resolveBoundaryAutoSides(db.getRoot(), direction, db.getLines()),
       lineEntities,

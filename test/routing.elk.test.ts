@@ -816,6 +816,46 @@ describe('routing (real ELK)', () => {
     expect(marks[0].attrs.style).toContain('#00c853');
   });
 
+  it('draws hand-routed lines blue under the debug overlay', async () => {
+    // A cross-boundary line is hand-routed by the renderer, not ELK. Under
+    // `debug ports` every segment of it is forced blue so it stands out; a plain
+    // intra-region ELK edge (A --> B) keeps its theme color (no inline stroke).
+    await render(
+      [
+        'bpmn tb',
+        '  debug ports',
+        '  region Left lr',
+        '    task A',
+        '    task B',
+        '    A --> B',
+        '  region Right tb',
+        '    catch C',
+        '  A --> C',
+        '    route depth:0 bend:z',
+      ].join('\n'),
+    );
+    // The hand-routed A --> C draws blue; the ELK-routed A --> B carries no inline stroke.
+    expect(edges().some((e) => e.attrs.style?.includes('#2962ff'))).toBe(true);
+    expect(edges().some((e) => !e.attrs.style?.includes('#2962ff'))).toBe(true);
+  });
+
+  it('leaves hand-routed lines their theme color when the debug overlay is off', async () => {
+    await render(
+      [
+        'bpmn tb',
+        '  region Left lr',
+        '    task A',
+        '    task B',
+        '    A --> B',
+        '  region Right tb',
+        '    catch C',
+        '  A --> C',
+        '    route depth:0 bend:z',
+      ].join('\n'),
+    );
+    expect(edges().some((e) => e.attrs.style?.includes('#2962ff'))).toBe(false);
+  });
+
   it('routes a line to a declared port whose other end is nested in a sibling container', async () => {
     // The reported bug: a node inside one region wired to a port on a *sibling*
     // region. The line lives in the root LCA but the node is a level down, so a

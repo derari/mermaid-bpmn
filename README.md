@@ -64,7 +64,7 @@ bpmn
 | `task`                         | an atomic task            | boundary events only                                       |
 | `call`                         | a call activity           | boundary events only                                       |
 | `subprocess` (alias `process`) | an expandable sub-process | activities, gateways, data, events, regions, groups, ports |
-| `event-subprocess`             | an event sub-process      | same as `subprocess`                                       |
+| `event subprocess`             | an event sub-process      | same as `subprocess`                                       |
 | `transaction`                  | a transaction             | same as `subprocess`                                       |
 
 **Task types** are an optional prefix that marks a task's kind. When an activity
@@ -688,6 +688,10 @@ bpmn LR
 ```
 ````
 
+A `subprocess`, `event subprocess`, or `transaction` can also take its direction
+inline as a trailing token, the same way a `region` or `group` does
+(`subprocess Frontend TB`) — equivalent to a nested `direction` statement.
+
 A container can flow differently from its parent; a line that crosses between
 two differently-flowing containers is routed for you, and can be tuned — see
 [Cross-boundary routing](#cross-boundary-routing).
@@ -808,6 +812,10 @@ bpmn TB
   A --> C
 ```
 ````
+
+While the overlay is on, every hand-routed (crossing) line is also drawn in
+**blue**, so you can tell at a glance which lines the router tunnelled by hand
+from the plain ELK-routed ones.
 
 The directive is only valid at the root — nested under an entity it is dropped
 with a console warning.

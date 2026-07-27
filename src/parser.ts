@@ -34,7 +34,7 @@ const DIRECTION_RE = /^direction\s+(\S+)$/;
 // `auto-sequence <on|off>` — toggles auto-sequencing for the container it is
 // nested under (the diagram root at the top level). A bare `auto-sequence` turns
 // it on. The value is inherited by descendants; the root default is off.
-const AUTO_SEQUENCE_RE = /^auto-sequence(?:\s+(on|off))?$/i;
+const AUTO_SEQUENCE_RE = /^auto[-\s]*sequence(?:\s+(on|off))?$/i;
 // `debug ports` — a root-only directive that makes the renderer draw the
 // otherwise-invisible routing ports as small red squares.
 const DEBUG_PORTS_RE = /^debug\s+ports$/;
@@ -429,16 +429,51 @@ function normalizeDirection(token: string): Direction | null {
 
 // --- BPMN entity vocabularies -------------------------------------------------
 
-const ACTIVITY_TYPES = new Map<string, ActivityType>([
+// Every DSL keyword that carries a hyphen is also accepted with the parts run
+// together (`adhoc`) or written as two tokens with a space (`ad hoc`). This
+// expands a map's initializer so each hyphenated key also gets a no-separator
+// entry; the two-token spelling is resolved at lookup time (see matchKeyword).
+function withHyphenAliases<V>(entries: readonly (readonly [string, V])[]): [string, V][] {
+  const out: [string, V][] = [];
+  for (const [key, value] of entries) {
+    out.push([key, value]);
+    if (key.includes('-')) out.push([key.replace(/-/g, ''), value]);
+  }
+  return out;
+}
+
+// Looks up a keyword vocabulary at token position `i`. Since a hyphenated keyword
+// may be written as two tokens (`ad hoc`, `event subprocess`), the two-token
+// hyphen-join is tried first, then the single token — this also lets the longer
+// `receive instance` win over a bare `receive`. Returns the mapped value and the
+// index past what it consumed, or null when nothing there matches.
+function matchKeyword<V>(
+  map: ReadonlyMap<string, V>,
+  tokens: string[],
+  i: number,
+): { value: V; next: number } | null {
+  const one = tokens[i];
+  if (one === undefined) return null;
+  const two = tokens[i + 1];
+  if (two !== undefined) {
+    const joined = map.get(`${one}-${two}`);
+    if (joined !== undefined) return { value: joined, next: i + 2 };
+  }
+  const single = map.get(one);
+  if (single !== undefined) return { value: single, next: i + 1 };
+  return null;
+}
+
+const ACTIVITY_TYPES = new Map<string, ActivityType>(withHyphenAliases([
   ['task', 'task'],
-  ['subprocess', 'subprocess'],
+  ['sub-process', 'subprocess'],
   ['process', 'subprocess'], // alias
   ['call', 'call'],
   ['event-subprocess', 'event-subprocess'],
   ['transaction', 'transaction'],
-]);
+]));
 
-const TASK_TYPES = new Map<string, TaskType>([
+const TASK_TYPES = new Map<string, TaskType>(withHyphenAliases([
   ['receive', 'receive'],
   ['script', 'script'],
   ['manual', 'manual'],
@@ -447,18 +482,17 @@ const TASK_TYPES = new Map<string, TaskType>([
   ['user', 'user'],
   ['send', 'send'],
   ['rule', 'rule'],
-]);
+]));
 
-const ACTIVITY_MARKERS = new Map<string, ActivityMarker>([
+const ACTIVITY_MARKERS = new Map<string, ActivityMarker>(withHyphenAliases([
   ['instance', 'instance'],
   ['loop', 'loop'],
   ['sequential', 'sequential'],
   ['multi', 'sequential'], // alias
   ['parallel', 'parallel'],
   ['compensation', 'compensation'],
-  ['adhoc', 'adhoc'],
-  ['ad-hoc', 'adhoc'], // alias
-]);
+  ['ad-hoc', 'adhoc'],
+]));
 
 const GATE_TYPES = new Map<string, GateType>([
   ['exclusive', 'exclusive'],
@@ -518,11 +552,19 @@ function readEventOperation(
     case 'throw':
       return { op: 'throw', next: i + 1 };
     case 'non-interrupt':
+    case 'noninterrupt':
     case 'continue':
       return { op: 'non-interrupt', next: i + 1 };
+    case 'non':
+      // the two-token spelling `non interrupt`
+      if (tokens[i + 1] === 'interrupt') return { op: 'non-interrupt', next: i + 2 };
+      return null;
     case 'boundary': {
       const n = tokens[i + 1];
-      if (n === 'non-interrupt' || n === 'continue') return { op: 'boundary-non-interrupt', next: i + 2 };
+      if (n === 'non-interrupt' || n === 'noninterrupt' || n === 'continue')
+        return { op: 'boundary-non-interrupt', next: i + 2 };
+      if (n === 'non' && tokens[i + 2] === 'interrupt')
+        return { op: 'boundary-non-interrupt', next: i + 3 };
       return { op: 'boundary', next: i + 1 };
     }
     default:
@@ -658,29 +700,40 @@ function matchEntity(line: string): EntityDraft | null {
     return d;
   }
 
-  // activity: `<marker?> <task-type?> <activity-type> <id?>`
+  // activity: `<marker?> <task-type?> <activity-type> <id?> <direction?>`
   {
     let i = 0;
     let marker: ActivityMarker | undefined;
     let taskType: TaskType | undefined;
-    const m = ACTIVITY_MARKERS.get(lc[i] ?? '');
-    if (m) {
-      marker = m;
-      i++;
+    const mk = matchKeyword(ACTIVITY_MARKERS, lc, i);
+    if (mk) {
+      marker = mk.value;
+      i = mk.next;
     }
-    const tt = TASK_TYPES.get(lc[i] ?? '');
+    const tt = matchKeyword(TASK_TYPES, lc, i);
     if (tt) {
-      taskType = tt;
-      i++;
+      taskType = tt.value;
+      i = tt.next;
     }
-    const at = ACTIVITY_TYPES.get(lc[i] ?? '');
+    const at = matchKeyword(ACTIVITY_TYPES, lc, i);
     if (at) {
-      i++;
+      i = at.next;
       const d = draft('activity');
-      d.activityType = at;
+      d.activityType = at.value;
       if (taskType) d.taskType = taskType;
       if (marker && marker !== 'instance') d.marker = marker;
-      d.name = tokens.slice(i).join(' ');
+      const words = tokens.slice(i);
+      // The expandable container activities accept a trailing direction modifier
+      // inline, like region/group: `subprocess S LR` sets its internal layout
+      // direction. Atomic activities (task/call) have no inside to lay out.
+      if (ACTIVITY_CONTAINER_TYPES.has(at.value) && words.length) {
+        const dir = normalizeDirection(words[words.length - 1]);
+        if (dir) {
+          d.direction = dir;
+          words.pop();
+        }
+      }
+      d.name = words.join(' ');
       return d;
     }
   }

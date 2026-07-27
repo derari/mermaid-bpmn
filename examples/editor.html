@@ -179,7 +179,7 @@
       <span class="hint">Edit on the left — the diagram re-renders as you type.</span>
       <div class="download">
         <button id="download-toggle" class="theme-toggle" type="button" aria-haspopup="true" aria-expanded="false">
-          ⬇ Download ▾
+          Download ▾
         </button>
         <ul id="download-menu" class="download-menu" hidden>
           <li><button id="download-svg" type="button">SVG</button></li>
@@ -309,11 +309,13 @@
       catch
       data store "Data\ Store"
         --> Subprocess
-      subprocess Subprocess
-        start Start Event
-        loop subprocess "Looped\ Subprocess"
-        end "End Event"
-        event-subprocess Event Subprocess
+      subprocess Subprocess tb
+        region lr
+          start Start Event
+          loop subprocess "Looped\ Subprocess"
+          end "End Event"
+
+        event-subprocess Event Subprocess lr
           conditional start "Conditional\ Start Event"
           error e1 "Error End\ Event"
 

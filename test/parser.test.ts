@@ -117,6 +117,48 @@ describe('bpmn parser', () => {
       ]);
     });
 
+    it('peels a trailing direction on every container activity, keeping the id', () => {
+      parse('subprocess S LR', 'event-subprocess E TB', 'transaction X RL');
+      expect(db.getEntities()).toEqual([
+        activity({ name: 'S', activityType: 'subprocess', direction: 'LR' }),
+        activity({ name: 'E', activityType: 'event-subprocess', direction: 'TB' }),
+        activity({ name: 'X', activityType: 'transaction', direction: 'RL' }),
+      ]);
+    });
+
+    it('does not treat a trailing direction as inline on atomic activities', () => {
+      parse('task T LR', 'call C RL');
+      expect(db.getEntities()).toEqual([
+        activity({ name: 'T LR' }),
+        activity({ name: 'C RL', activityType: 'call' }),
+      ]);
+    });
+
+    it('accepts the space and no-symbol spellings of hyphenated keywords', () => {
+      parse(
+        'sub process A',
+        'sub-process B',
+        'subprocess C',
+        'event subprocess D',
+        'eventsubprocess E',
+        'ad hoc task F',
+        'adhoc task G',
+        'receive instance task H',
+        'receiveinstance task I',
+      );
+      expect(db.getEntities()).toEqual([
+        activity({ name: 'A', activityType: 'subprocess' }),
+        activity({ name: 'B', activityType: 'subprocess' }),
+        activity({ name: 'C', activityType: 'subprocess' }),
+        activity({ name: 'D', activityType: 'event-subprocess' }),
+        activity({ name: 'E', activityType: 'event-subprocess' }),
+        activity({ name: 'F', marker: 'adhoc' }),
+        activity({ name: 'G', marker: 'adhoc' }),
+        activity({ name: 'H', taskType: 'receive-instance' }),
+        activity({ name: 'I', taskType: 'receive-instance' }),
+      ]);
+    });
+
     it('parses a task type prefix', () => {
       parse('user task T');
       expect(db.getEntities()[0]).toEqual(activity({ taskType: 'user' }));
@@ -291,6 +333,21 @@ describe('bpmn parser', () => {
       expect(db.getEntities().map((e) => e.eventOperation)).toEqual([
         'non-interrupt',
         'boundary',
+        'boundary-non-interrupt',
+        'boundary-non-interrupt',
+      ]);
+    });
+
+    it('accepts the space and no-symbol spellings of non-interrupt', () => {
+      parse(
+        'non interrupt n1',
+        'noninterrupt n2',
+        'boundary non interrupt b1',
+        'boundary noninterrupt b2',
+      );
+      expect(db.getEntities().map((e) => e.eventOperation)).toEqual([
+        'non-interrupt',
+        'non-interrupt',
         'boundary-non-interrupt',
         'boundary-non-interrupt',
       ]);
@@ -659,6 +716,13 @@ describe('bpmn parser', () => {
     it('parses on/off explicitly', () => {
       parse('auto-sequence off');
       expect(db.getRoot().autoSequence).toBe(false);
+    });
+
+    it('accepts the space and no-symbol spellings of the directive', () => {
+      parse('auto sequence off');
+      expect(db.getRoot().autoSequence).toBe(false);
+      parse('autosequence on');
+      expect(db.getRoot().autoSequence).toBe(true);
     });
 
     it('chains unlinked flow children in declaration order', () => {
