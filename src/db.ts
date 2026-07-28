@@ -9,7 +9,10 @@ export type Direction = 'TB' | 'BT' | 'LR' | 'RL';
 // border with a caption, but transparent interior); `text` is a text annotation (a
 // transparent box with an open bracket on one edge, holding only ports); and `port`
 // is a named connection point pinned to one edge of its parent container (realised
-// as an ELK port in the renderer rather than a drawn box). Each family carries its
+// as an ELK port in the renderer rather than a drawn box). `error` is a diagnostic
+// node the parser inserts for a line it cannot parse or a line endpoint it cannot
+// resolve; it draws as a plain box with an extra-bold red border (see the renderer)
+// and carries the diagnostic text as its explicit `label`. Each family carries its
 // own optional discriminator fields on the Entity (activityType/taskType/marker,
 // gateType, dataType, eventType/…) below.
 export type EntityType =
@@ -22,7 +25,8 @@ export type EntityType =
   | 'region'
   | 'group'
   | 'text'
-  | 'port';
+  | 'port'
+  | 'error';
 
 // An activity's shape family. `task` and `call` are atomic (only boundary events
 // nest inside them); `subprocess` (alias `process`), `event-subprocess`, and

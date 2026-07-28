@@ -55,6 +55,9 @@ const SUPPORTED_TYPES: ReadonlySet<EntityType> = new Set<EntityType>([
   'group',
   'text',
   'port',
+  // A diagnostic node the parser inserts for an unparseable line or an unresolved
+  // line endpoint; drawn as a plain box with an extra-bold red border.
+  'error',
 ]);
 
 // Layout tuning. Leaf boxes size to their label; containers reserve a band at

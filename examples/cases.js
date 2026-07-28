@@ -505,9 +505,21 @@ export const cases = [
   task db2 "Smaller (icon-size:.67)"
     style icon:lucide:database icon-size:.67`,
   },
+  // --- Curly syntax ---------------------------------------------------------
+  {
+    title: 'Curly syntax: braces nest instead of indentation',
+    code: `bpmn
+    subprocess Order {
+  subprocess Pick
+      subprocess Pack
+  Pick --> Pack
+  }
+      task Ship
+      Order --> Ship`,
+  },
   // --- Layout: regions ------------------------------------------------------
   {
-    title: '3 activities, last two in a region tb',
+    title: 'Region: 3 activities, last two in a region tb',
     code: `bpmn
   task A
   region tb
@@ -750,5 +762,45 @@ export const cases = [
     catch D
   style Left fill:#e3f2fd
   style Right fill:#fff3e0`,
+  },
+  // --- Errors ---------------------------------------------------------------
+  {
+    title: 'Error: an unparseable line becomes a red diagnostic node',
+    code: `bpmn
+  task A
+  this is not valid bpmn
+  task B`,
+  },
+  {
+    title: 'Error: an unresolved line target, placed beside the valid end',
+    code: `bpmn
+  task A
+  A --> Missing`,
+  },
+  {
+    title: 'Error: both ends unresolved — two error nodes at the diagram root',
+    code: `bpmn
+  X --> Y`,
+  },
+  {
+    title: 'Error: an unresolved target inside a lane sits next to its source',
+    code: `bpmn
+  lane L
+    task A
+    A --> Nowhere`,
+  },
+  {
+    title: 'Error: a misspelled container with { becomes an error box holding its children',
+    code: `bpmn LR
+  subprxocess {
+task a
+task b
+}`,
+  },
+  {
+    title: 'Error: a nesting violation becomes an error node in place',
+    code: `bpmn
+  pool P
+    task T`,
   }
 ];

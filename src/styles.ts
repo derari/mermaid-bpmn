@@ -43,6 +43,13 @@ const styles = (options: ThemeOptions = {}): string => {
   .bpmn-group {
     stroke-dasharray: 8 3 2 3;
   }
+  /* A diagnostic node (an unparseable line, or an unresolved line endpoint) is
+     drawn with an extra-bold red border so it stands out. It comes after the base
+     \`.bpmn-entity\` rule so its equal-specificity stroke wins. */
+  .bpmn-error {
+    stroke: ${INVALID};
+    stroke-width: 3px;
+  }
   .bpmn-label {
     fill: ${text};
     font-family: ${font};

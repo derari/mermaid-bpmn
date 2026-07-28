@@ -174,7 +174,7 @@
   <body>
     <header>
       <h1>mermaid-bpmn editor</h1>
-      <a class="nav" href="./index.html">[example gallery]</a>
+      <a class="nav" href=".">[example gallery]</a>
       <a class="nav" href="https://github.com/derari/mermaid-bpmn#readme">[readme]</a>
       <span class="hint">Edit on the left — the diagram re-renders as you type.</span>
       <div class="download">
@@ -362,13 +362,17 @@
         --> Send Task
       comment Text Annotation
         Group ---
-      group Group
+
+      # dont like indentation? curly braces work, too
+      group Group {
         parallel task pt |
             Multi Instance
             Task (Parallel)
-          --> p2
         send task Send Task
-          --> p2
+        pt --> p2
+        Send Task --> p2
+      }
+
       parallel gate p2
       message end "Message\\ End Event"
 `;

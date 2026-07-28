@@ -6,6 +6,14 @@ import { parser } from '../src/parser.js';
 // prepends it and joins lines so a test reads as the DSL body.
 const parse = (...lines: string[]): void => parser.parse(['bpmn', ...lines].join('\n'));
 
+// Collects every `error` node's label from the whole tree, so a test can assert a
+// parse error surfaced as a diagnostic node (parsing never throws on bad syntax).
+const errorLabels = (nodes: Entity[] = db.getEntities()): string[] =>
+  nodes.flatMap((n) => [
+    ...(n.type === 'error' ? [n.label ?? ''] : []),
+    ...errorLabels(n.children),
+  ]);
+
 describe('bpmn parser', () => {
   beforeEach(() => db.clear());
 
@@ -52,13 +60,16 @@ describe('bpmn parser', () => {
       ]);
     });
 
-    it('rejects a pool that is not at the root', () => {
-      expect(() => parse('pool P', '  pool Q')).toThrow(/cannot contain a pool/);
+    it('flags a pool that is not at the root as an error node', () => {
+      parse('pool P', '  pool Q');
+      expect(errorLabels().some((l) => /cannot contain a pool/.test(l))).toBe(true);
     });
 
-    it('rejects a non-lane child of a pool', () => {
-      expect(() => parse('pool P', '  task T')).toThrow(/cannot contain a activity/);
-      expect(() => parse('pool P', '  region R')).toThrow(/cannot contain a region/);
+    it('flags a non-lane child of a pool as an error node', () => {
+      parse('pool P', '  task T');
+      expect(errorLabels().some((l) => /cannot contain a activity/.test(l))).toBe(true);
+      parse('pool P', '  region R');
+      expect(errorLabels().some((l) => /cannot contain a region/.test(l))).toBe(true);
     });
   });
 
@@ -84,8 +95,9 @@ describe('bpmn parser', () => {
       ]);
     });
 
-    it('rejects a lane nested in another lane', () => {
-      expect(() => parse('pool P', '  lane L', '    lane L2')).toThrow(/cannot contain a lane/);
+    it('flags a lane nested in another lane as an error node', () => {
+      parse('pool P', '  lane L', '    lane L2');
+      expect(errorLabels().some((l) => /cannot contain a lane/.test(l))).toBe(true);
     });
   });
 
@@ -200,8 +212,9 @@ describe('bpmn parser', () => {
       ]);
     });
 
-    it('rejects a non-boundary event inside a task', () => {
-      expect(() => parse('task T', '  start s')).toThrow(/can only contain boundary events/);
+    it('flags a non-boundary event inside a task as an error node', () => {
+      parse('task T', '  start s');
+      expect(errorLabels().some((l) => /can only contain boundary events/.test(l))).toBe(true);
     });
   });
 
@@ -441,8 +454,9 @@ describe('bpmn parser', () => {
       expect(sibling.name).toBe('Sibling');
     });
 
-    it('rejects a | multi-line-label marker on a port', () => {
-      expect(() => parse('lane L', '  port p e |', '    label')).toThrow(/cannot have a label/);
+    it('flags a | multi-line-label marker on a port as an error node', () => {
+      parse('lane L', '  port p e |', '    label');
+      expect(errorLabels().some((l) => /cannot have a label/.test(l))).toBe(true);
     });
   });
 
@@ -476,8 +490,9 @@ describe('bpmn parser', () => {
       expect(text.children).toEqual([{ name: 'p', type: 'port', children: [], portSide: 'e' }]);
     });
 
-    it('rejects a non-port child of a text annotation', () => {
-      expect(() => parse('comment note', '  task T')).toThrow(/cannot contain a activity/);
+    it('flags a non-port child of a text annotation as an error node', () => {
+      parse('comment note', '  task T');
+      expect(errorLabels().some((l) => /cannot contain a activity/.test(l))).toBe(true);
     });
 
     it('carries an inline class and a multi-line | label', () => {
@@ -507,16 +522,19 @@ describe('bpmn parser', () => {
       ]);
     });
 
-    it('rejects a port at the diagram root', () => {
-      expect(() => parse('port n')).toThrow(/cannot contain a port/);
+    it('flags a port at the diagram root as an error node', () => {
+      parse('port n');
+      expect(errorLabels().some((l) => /cannot contain a port/.test(l))).toBe(true);
     });
 
-    it('rejects a port without a trailing direction', () => {
-      expect(() => parse('lane L', '  port foo')).toThrow(/needs a trailing direction/);
+    it('flags a port without a trailing direction as an error node', () => {
+      parse('lane L', '  port foo');
+      expect(errorLabels().some((l) => /needs a trailing direction/.test(l))).toBe(true);
     });
 
-    it('rejects a labelled port', () => {
-      expect(() => parse('lane L', '  port p "x" e')).toThrow(/cannot have a label/);
+    it('flags a labelled port as an error node', () => {
+      parse('lane L', '  port p "x" e');
+      expect(errorLabels().some((l) => /cannot have a label/.test(l))).toBe(true);
     });
   });
 
@@ -698,6 +716,69 @@ describe('bpmn parser', () => {
         parse('task A', 'task B', 'A --> B');
         expect(db.getLines()[0].label).toBeUndefined();
       });
+    });
+  });
+
+  describe('error nodes', () => {
+    it('turns an unparseable line into an error node captioned with its number and text', () => {
+      parse('task A', 'this is not valid bpmn');
+      const entities = db.getEntities();
+      const err = entities[entities.length - 1];
+      expect(err.type).toBe('error');
+      // `parse` prepends the `bpmn` header, so the bad line is source line 3.
+      expect(err.label).toBe('line 3: invalid syntax\nthis is not valid bpmn');
+    });
+
+    it('inserts the error node where the bad line was written (inside its container)', () => {
+      parse('subprocess S', '  gibberish here');
+      const [sp] = db.getEntities();
+      expect(sp.children.map((c) => c.type)).toEqual(['error']);
+      expect(sp.children[0].label).toBe('line 3: invalid syntax\ngibberish here');
+    });
+
+    it('makes an unresolved line target an error node beside the valid end', () => {
+      parse('task A', 'A --> Missing');
+      const entities = db.getEntities();
+      const err = entities[entities.length - 1];
+      expect(err.type).toBe('error');
+      expect(err.label).toBe('line 3: invalid target "Missing"');
+      // The line is rewired to the error node so the broken link is drawn.
+      expect(db.getLines()).toEqual([{ source: 'A', target: err, type: '-->' }]);
+    });
+
+    it('places the error node as a sibling of the resolved (source) end', () => {
+      parse('lane L', '  task A', '  A --> Missing');
+      const lane = db.getEntities()[0].children[0];
+      const err = lane.children[lane.children.length - 1];
+      expect(err.type).toBe('error');
+      expect(err.label).toBe('line 4: invalid target "Missing"');
+    });
+
+    it('reports an unresolved source end too', () => {
+      parse('task B', 'Missing --> B');
+      const entities = db.getEntities();
+      const err = entities[entities.length - 1];
+      expect(err.type).toBe('error');
+      expect(err.label).toBe('line 3: invalid target "Missing"');
+      expect(db.getLines()).toEqual([{ source: err, target: 'B', type: '-->' }]);
+    });
+
+    it('inserts both error nodes at the root when neither end resolves', () => {
+      parse('X --> Y');
+      const errs = db.getEntities().filter((e) => e.type === 'error');
+      expect(errs.map((e) => e.label)).toEqual([
+        'line 2: invalid target "X"',
+        'line 2: invalid target "Y"',
+      ]);
+      const [line] = db.getLines();
+      expect(line.source).toBe(errs[0]);
+      expect(line.target).toBe(errs[1]);
+    });
+
+    it('leaves a fully resolved line untouched (string endpoints kept)', () => {
+      parse('task A', 'task B', 'A --> B');
+      expect(db.getEntities().some((e) => e.type === 'error')).toBe(false);
+      expect(db.getLines()).toEqual([{ source: 'A', target: 'B', type: '-->' }]);
     });
   });
 
@@ -892,6 +973,105 @@ describe('bpmn parser', () => {
       expect(db.getDebugPorts()).toBe(false);
       expect(warn).toHaveBeenCalled();
       warn.mockRestore();
+    });
+  });
+
+  describe('curly mode', () => {
+    // Reduces an entity to its name and the names of its direct children.
+    const childNames = (e: Entity): string[] => e.children.map((c) => c.name);
+
+    it('defines nesting by braces, ignoring indentation', () => {
+      // The classic case: b opens a scope, so c and d (whatever their indent) are
+      // its children; e, after the close, resumes under a — b's parent.
+      parse(
+        'subprocess a',
+        '    subprocess b {',
+        '  subprocess c',
+        '        subprocess d',
+        '}',
+        '    subprocess e',
+      );
+      const [a] = db.getEntities();
+      expect(childNames(a)).toEqual(['b', 'e']);
+      const b = a.children.find((c) => c.name === 'b') as Entity;
+      expect(childNames(b)).toEqual(['c', 'd']);
+    });
+
+    it('nests scopes with inner braces', () => {
+      parse('subprocess b {', 'subprocess c {', 'subprocess d', '}', 'subprocess e', '}');
+      const [b] = db.getEntities();
+      expect(childNames(b)).toEqual(['c', 'e']);
+      const c = b.children.find((x) => x.name === 'c') as Entity;
+      expect(childNames(c)).toEqual(['d']);
+    });
+
+    it('closes several scopes from one line of braces', () => {
+      parse('subprocess b {', 'subprocess c {', 'subprocess d', '} }', 'subprocess f');
+      expect(db.getEntities().map((e) => e.name)).toEqual(['b', 'f']);
+    });
+
+    it('opens a scope at the diagram root with bpmn {', () => {
+      parser.parse(['bpmn {', 'subprocess a', 'subprocess b', '}'].join('\n'));
+      expect(db.getEntities().map((e) => e.name)).toEqual(['a', 'b']);
+    });
+
+    it('opens a scope on a pool and lays out its lanes by braces', () => {
+      parse('pool P {', 'lane L1', 'lane L2', '}');
+      const [pool] = db.getEntities();
+      expect(childNames(pool)).toEqual(['L1', 'L2']);
+    });
+
+    it('leaves a multi-line | label driven by indentation inside a scope', () => {
+      parse('subprocess b {', 'subprocess c |', '    line one', '    line two', 'subprocess d', '}');
+      const [b] = db.getEntities();
+      expect(childNames(b)).toEqual(['c', 'd']);
+      expect((b.children.find((x) => x.name === 'c') as Entity).label).toBe('line one\nline two');
+    });
+
+    it('attaches a bare style to the item it follows, not the container', () => {
+      parse('subprocess b {', 'task x', 'style fill:red', 'task y', '}');
+      const [b] = db.getEntities();
+      expect((b.children.find((c) => c.name === 'x') as Entity).style).toEqual({ fill: 'red' });
+      expect((b.children.find((c) => c.name === 'y') as Entity).style).toBeUndefined();
+    });
+
+    it('accepts absolute lines, including chains', () => {
+      parse('subprocess b {', 'task x', 'task y', 'task z', 'x --> y --> z', '}');
+      expect(db.getLines().length).toBe(2);
+    });
+
+    it('flags a relative line in curly mode as an error node', () => {
+      parse('subprocess b {', 'task x', '--> x', '}');
+      expect(errorLabels().some((l) => /curly mode/.test(l))).toBe(true);
+    });
+
+    it('flags a relative complex line in curly mode as an error node', () => {
+      parse('subprocess b {', 'task x', 'task y', '--> x --> y', '}');
+      expect(errorLabels().some((l) => /curly mode/.test(l))).toBe(true);
+    });
+
+    it('flags a { after a non-container declaration as an error node', () => {
+      parse('gate g {', '}');
+      expect(errorLabels().some((l) => /container declaration/.test(l))).toBe(true);
+    });
+
+    it('flags an unmatched closing brace as an error node', () => {
+      parse('subprocess a', '}');
+      expect(errorLabels().some((l) => /unmatched/.test(l))).toBe(true);
+    });
+
+    it('makes a { after an unrecognised keyword an error container holding its children', () => {
+      // The typo `subprxocess` is not a container declaration, so `{` opens an error
+      // scope; the tasks nest inside the error node (indentation is ignored in curly
+      // mode). See the "errors should support curly braces" requirement.
+      parser.parse(['bpmn LR', '  subprxocess {', 'task a', 'task b', '}'].join('\n'));
+      const [err] = db.getEntities();
+      expect(err.type).toBe('error');
+      expect(err.label).toMatch(/line 2: .*subprxocess/s);
+      expect(err.children.map((c) => [c.name, c.type])).toEqual([
+        ['a', 'activity'],
+        ['b', 'activity'],
+      ]);
     });
   });
 });

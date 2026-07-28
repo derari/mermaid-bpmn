@@ -476,6 +476,27 @@ bpmn LR
 expands to `A --> B` and `B --> C`. Whitespace must flank an arrow next to a name,
 so a hyphen inside a name is never mistaken for a connector.
 
+### Curly syntax
+
+Any container (the diagram root, a pool, lane, region, group, or an expandable
+activity) may end its line with `{` to nest its contents in **braces** instead of
+by indentation. Inside a brace scope indentation is ignored — parent/child comes
+only from the nesting — and a `}` (one per scope, several may share a line) closes
+back to the enclosing container:
+
+````
+```bpmn
+bpmn
+subprocess Order {
+  task Pick
+  task Pack
+}
+```
+````
+
+Multi-line `|` labels still read their indentation as usual, and lines must name
+both endpoints — relative lines (`--> B`) are not available inside a brace scope.
+
 ## Styling
 
 ### Colors

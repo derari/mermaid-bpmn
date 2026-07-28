@@ -43,6 +43,13 @@ const DEBUG_PORTS_RE = /^debug\s+ports$/;
 // line whose first endpoint is literally named "route" still reads as a line.
 const ROUTE_RE = /^route\s+(.+)$/;
 
+// Curly mode. A container declaration whose line ends with `{` opens an explicit
+// nesting scope in which indentation is ignored and parent/child is defined only
+// by `{ }` nesting. A closing brace must sit on its own line, but several may
+// share one line (`} }` / `}}`); this matches such a pure-brace line and its
+// count of braces is the number of scopes it closes.
+const CLOSE_CURLY_RE = /^}[}\s]*$/;
+
 // Color styling. `classDef <name> <props>` defines a reusable style bag;
 // `class <names> <class>` attaches a class to comma-separated entity names (the
 // class name is the final token); `style …` either targets entities by name
@@ -597,8 +604,9 @@ interface EntityDraft {
 
 // Classifies a declaration line into a BPMN entity draft, or returns null when it
 // is not a recognizable entity (so the caller falls through to "unknown line").
-// Throws for a line that clearly IS an entity but is malformed (a port without a
-// direction, or a port carrying a label).
+// A line that clearly IS an entity but is malformed (a port without a direction, or
+// a port carrying a label) yields an `error` draft carrying the reason as its
+// `label`; the caller turns it into a diagnostic node rather than throwing.
 function matchEntity(line: string): EntityDraft | null {
   const { label, rest } = extractLabel(line);
   const [declPart, classPart] = rest.split(INLINE_CLASS_SEP, 2);
@@ -672,14 +680,17 @@ function matchEntity(line: string): EntityDraft | null {
   // (the root check happens once the parent is known).
   if (lc[0] === 'port') {
     if (label !== undefined || multilineLabel) {
-      throw new Error(`bpmn: a port cannot have a label (found "${line}")`);
+      return { type: 'error', name: '', classes, label: 'a port cannot have a label' };
     }
     const words = tokens.slice(1);
     const side = words.length ? ROUTE_SIDES.get(words[words.length - 1].toLowerCase()) : undefined;
     if (!side) {
-      throw new Error(
-        `bpmn: a port needs a trailing direction (n/e/s/w or a compass word) (found "${line}")`,
-      );
+      return {
+        type: 'error',
+        name: '',
+        classes,
+        label: 'a port needs a trailing direction (n/e/s/w or a compass word)',
+      };
     }
     const d = draft('port');
     d.portSide = side;
@@ -839,6 +850,20 @@ const ATOMIC_ACTIVITY_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>(['
 const TEXT_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>(['port']);
 const NO_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>();
 
+// Entity types that accept child objects, and so may open a curly-mode scope with
+// a trailing `{`. This mirrors the container roster in allowedChildTypes: the
+// swimlane containers, structural regions/groups, a comment (text), and every
+// activity (container activities hold flow; atomic ones hold boundary events).
+// The diagram root also opens a scope, via `bpmn {` (handled at the header).
+const CURLY_CONTAINER_TYPES: ReadonlySet<EntityType> = new Set<EntityType>([
+  'pool',
+  'lane',
+  'region',
+  'group',
+  'text',
+  'activity',
+]);
+
 function isContainerActivity(entity: Entity): boolean {
   return entity.type === 'activity'
     && entity.activityType !== undefined
@@ -983,9 +1008,26 @@ export const parser = {
       return autoPool;
     };
 
+    // Parsing never throws on invalid syntax: every parse error becomes a
+    // diagnostic `error` node in the tree instead (drawn as a plain box with an
+    // extra-bold red border — see the renderer). This creates one under `parent`,
+    // captioned "line <#>: <reason>", and returns it so a broken line endpoint can
+    // point at it.
+    const addError = (parent: Entity, lineNo: number, reason: string): Entity => {
+      const node = db.addEntity('', 'error', parent);
+      node.label = `line ${lineNo}: ${reason}`;
+      return node;
+    };
+
     // Complex lines are collected and expanded after the tree is fully built,
     // since resolving absolute endpoints may reference entities declared later.
     const complexSpecs: ComplexLineSpec[] = [];
+
+    // The 1-based source line each plain line was written on, so the endpoint pass
+    // (run after the tree is complete) can name the offending line in a diagnostic
+    // error node when an endpoint fails to resolve. Only plain lines keep a string
+    // endpoint that can go unresolved — complex lines resolve to entities up front.
+    const lineNumbers = new Map<ReturnType<typeof db.addLine>, number>();
 
     // Popping an entity frame is where its entity-wide `route` (if any) lands on
     // the lines anywhere in its subtree. The default is merged UNDER whatever the
@@ -998,35 +1040,125 @@ export const parser = {
       }
     };
 
+    // The open curly-mode scopes, innermost last. Each entry is the frame a `{`
+    // opened; the parser is in curly mode whenever this is non-empty. In curly
+    // mode a new entity/line resolves its parent from the innermost entry rather
+    // than from indentation.
+    const curlyFrames: Frame[] = [];
+    const inCurly = (): boolean => curlyFrames.length > 0;
+    // Ends the previous sibling's scope: pop (and flush) every frame stacked
+    // above the innermost curly container, leaving that container on top so the
+    // next item nests directly under it. Called when a new entity/line is created
+    // in curly mode — an intervening bare `style`/`route` pushes no frame, so it
+    // still sees the item it follows on top.
+    const popToCurlyContainer = (): void => {
+      const container = curlyFrames[curlyFrames.length - 1];
+      while (stack[stack.length - 1] !== container) flushFrame(stack.pop() as Frame);
+    };
+
     const rawLines = text.split(/\r?\n/);
     for (let li = 0; li < rawLines.length; li++) {
       const raw = rawLines[li];
       const indent = raw.length - raw.trimStart().length;
-      const line = raw.trim();
+      let line = raw.trim();
 
       // Skip blanks and comments.
       if (line === '' || line.startsWith('%%') || line.startsWith('#')) {
         continue;
       }
 
+      // A pure-brace line closes one curly scope per `}`. Each pops (and flushes)
+      // everything above its container frame, then the container itself. When the
+      // last scope closes the parser is back in indentation mode, resuming under
+      // the parent of the entity that opened the first `{`.
+      if (CLOSE_CURLY_RE.test(line)) {
+        const closes = (line.match(/}/g) as RegExpMatchArray).length;
+        for (let n = 0; n < closes; n++) {
+          if (!inCurly()) {
+            addError(stack[stack.length - 1].entity, li + 1, 'unmatched "}"');
+            break;
+          }
+          const container = curlyFrames.pop() as Frame;
+          while (stack[stack.length - 1] !== container) flushFrame(stack.pop() as Frame);
+          flushFrame(stack.pop() as Frame); // the curly container frame itself
+        }
+        continue;
+      }
+
+      // A declaration ending in `{` opens a curly scope. Peel the brace off here so
+      // the declaration parses as usual; the check that it really is a container
+      // happens after the enclosing parent is known (below), where an invalid one
+      // becomes an error node that still opens the scope so its children nest inside.
+      let opensCurly = false;
+      if (line.endsWith('{')) {
+        opensCurly = true;
+        line = line.slice(0, -1).trimEnd();
+      }
+
       // The `bpmn` header sits at the root and may carry a diagram direction,
-      // mirroring flowchart's `flowchart LR`. It never nests entities itself.
+      // mirroring flowchart's `flowchart LR`. It never nests entities itself,
+      // though `bpmn {` opens a curly scope at the diagram root.
       const header = HEADER_RE.exec(line);
       if (header) {
         if (header[1]) {
           const dir = normalizeDirection(header[1]);
           if (dir) db.setDirection(dir);
         }
+        if (opensCurly) {
+          const frame: Frame = { indent, entity: root, styleTarget: root, curly: true };
+          stack.push(frame);
+          curlyFrames.push(frame);
+        }
         continue;
       }
 
-      // Pop frames until the top is strictly shallower than this line; that
-      // frame is our enclosing container. Flush each popped frame so an entity's
-      // `route` reaches the lines in its subtree.
-      while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
-        flushFrame(stack.pop() as Frame);
+      // Resolve the enclosing container. In curly mode it is the innermost open
+      // curly frame, and indentation is ignored; the previous sibling's frame is
+      // cleared later by popToCurlyContainer when the next item is created, so an
+      // intervening bare `style`/`route` still attaches to the item above it.
+      let parent: Entity;
+      if (inCurly()) {
+        parent = curlyFrames[curlyFrames.length - 1].entity;
+      } else {
+        // Pop frames until the top is strictly shallower than this line; that
+        // frame is our enclosing container. Flush each popped frame so an entity's
+        // `route` reaches the lines in its subtree.
+        while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
+          flushFrame(stack.pop() as Frame);
+        }
+        parent = stack[stack.length - 1].entity;
       }
-      const parent = stack[stack.length - 1].entity;
+
+      // Inserts a diagnostic error node for the current line under `parent`. When
+      // the offending line opened a `{`, the error node itself becomes the curly
+      // container so the (now orphaned) children nest inside it, mirroring what a
+      // valid container declaration would have done.
+      const insertError = (reason: string): void => {
+        if (inCurly()) popToCurlyContainer();
+        const node = addError(parent, li + 1, reason);
+        if (opensCurly) {
+          const frame: Frame = { indent, entity: node, styleTarget: node, curly: true };
+          stack.push(frame);
+          curlyFrames.push(frame);
+        }
+      };
+
+      // A `{` may only follow a real curly-container declaration (the `bpmn` header
+      // was handled above). Anything else — an unrecognised keyword (`subprxocess {`),
+      // a bare `{`, or a non-container entity (`gate g {`) — is a parse error: it
+      // becomes an error node that still opens the scope, so its children nest inside.
+      if (opensCurly) {
+        const peek = line === '' ? null : matchEntity(line);
+        const validContainer = !!peek && peek.type !== 'error' && CURLY_CONTAINER_TYPES.has(peek.type);
+        if (!validContainer) {
+          insertError(
+            line === ''
+              ? '"{" needs a container declaration before it'
+              : `"{" can only follow a container declaration\n${raw.trim()}`,
+          );
+          continue;
+        }
+      }
 
       // `debug ports` toggles the port overlay. It only makes sense at the
       // diagram root (directly under `bpmn`); nested it is dropped with a warning.
@@ -1125,8 +1257,15 @@ export const parser = {
       // has to be nested inside a real entity — the root (a structural region) is
       // not a valid endpoint.
       const enclosing = (): Entity => {
+        if (inCurly()) {
+          return addError(
+            parent,
+            li + 1,
+            'relative lines are not supported in curly mode; name both endpoints',
+          );
+        }
         if (parent === root) {
-          throw new Error(`bpmn: a relative line ("${line}") needs an enclosing entity`);
+          return addError(parent, li + 1, 'a relative line needs an enclosing entity');
         }
         return parent;
       };
@@ -1140,6 +1279,7 @@ export const parser = {
       // with every ancestor entity frame so an entity-wide `route` anywhere above
       // reaches it; frames flush deepest-first, so a closer entity's route wins.
       const pushLineFrame = (target: Styleable & Routable): void => {
+        if (inCurly()) popToCurlyContainer();
         for (const frame of stack) (frame.entityLines ??= []).push(target);
         stack.push({ indent, entity: parent, styleTarget: target, routeTarget: target });
       };
@@ -1201,10 +1341,17 @@ export const parser = {
         return l;
       };
 
+      // Records the source line of a plain line, so an unresolved endpoint can be
+      // reported against it later, then returns it for pushLineFrame.
+      const rememberLine = (l: ReturnType<typeof db.addLine>): typeof l => {
+        lineNumbers.set(l, li + 1);
+        return l;
+      };
+
       const leadLine = LEAD_LINE_RE.exec(lineBody);
       if (leadLine) {
         pushLineFrame(
-          withLabel(withSlash(db.addLine(enclosing(), leadLine[2].trim(), arrowType(leadLine[1]), parent), leadLine[1])),
+          rememberLine(withLabel(withSlash(db.addLine(enclosing(), leadLine[2].trim(), arrowType(leadLine[1]), parent), leadLine[1]))),
         );
         continue;
       }
@@ -1212,7 +1359,7 @@ export const parser = {
       const trailLine = TRAIL_LINE_RE.exec(lineBody);
       if (trailLine) {
         pushLineFrame(
-          withLabel(withSlash(db.addLine(trailLine[1].trim(), enclosing(), arrowType(trailLine[2]), parent), trailLine[2])),
+          rememberLine(withLabel(withSlash(db.addLine(trailLine[1].trim(), enclosing(), arrowType(trailLine[2]), parent), trailLine[2]))),
         );
         continue;
       }
@@ -1220,7 +1367,7 @@ export const parser = {
       const absLine = ABS_LINE_RE.exec(lineBody);
       if (absLine) {
         pushLineFrame(
-          withLabel(withSlash(db.addLine(absLine[1].trim(), absLine[3].trim(), arrowType(absLine[2])), absLine[2])),
+          rememberLine(withLabel(withSlash(db.addLine(absLine[1].trim(), absLine[3].trim(), arrowType(absLine[2])), absLine[2]))),
         );
         continue;
       }
@@ -1229,13 +1376,24 @@ export const parser = {
       // named like a keyword still reads as a line (entity decls carry no arrows).
       const draft = matchEntity(line);
       if (draft) {
+        // A malformed-but-recognisable entity (e.g. a port missing its direction):
+        // matchEntity flagged it with an `error` draft carrying the reason.
+        if (draft.type === 'error') {
+          insertError(draft.label as string);
+          continue;
+        }
         // A root-level lane is reparented into a shared, auto-inserted pool.
         const effParent = draft.type === 'lane' && parent === root ? getAutoPool() : parent;
 
+        // An `error` container (a malformed `{` declaration) stands in for whatever
+        // was intended, so it accepts any child — the orphaned lines nest inside it
+        // rather than spawning a cascade of further errors. Every real container is
+        // checked against its allowed child families as usual.
         const allowed = allowedChildTypes(effParent, root);
-        if (!allowed.has(draft.type)) {
+        if (effParent.type !== 'error' && !allowed.has(draft.type)) {
           const where = effParent === root ? 'the diagram root' : `a ${effParent.type}`;
-          throw new Error(`bpmn: ${where} cannot contain a ${draft.type} (found "${line}")`);
+          insertError(`${where} cannot contain a ${draft.type}`);
+          continue;
         }
         // task / call activities accept only boundary events.
         if (
@@ -1243,9 +1401,8 @@ export const parser = {
           !isContainerActivity(effParent) &&
           !(draft.eventOperation && BOUNDARY_OPERATIONS.has(draft.eventOperation))
         ) {
-          throw new Error(
-            `bpmn: a ${effParent.activityType} activity can only contain boundary events (found "${line}")`,
-          );
+          insertError(`a ${effParent.activityType} activity can only contain boundary events`);
+          continue;
         }
 
         const node = db.addEntity(draft.name, draft.type, effParent);
@@ -1295,11 +1452,25 @@ export const parser = {
         if (draft.eventOperation) node.eventOperation = draft.eventOperation;
         if (draft.boundarySide) node.boundarySide = draft.boundarySide;
         if (draft.bracketSide) node.bracketSide = draft.bracketSide;
-        stack.push({ indent, entity: node, styleTarget: node });
+        // A new item in curly mode ends the previous sibling's frame scope.
+        if (inCurly()) popToCurlyContainer();
+        if (opensCurly) {
+          // The declaration opened a `{`: this entity becomes a curly container.
+          const frame: Frame = { indent, entity: node, styleTarget: node, curly: true };
+          stack.push(frame);
+          curlyFrames.push(frame);
+        } else {
+          stack.push({ indent, entity: node, styleTarget: node });
+        }
         continue;
       }
 
-      // Unknown line: ignore for now. A stricter mode can throw here later.
+      // A line that matched no pattern above is a syntax error. Rather than drop it
+      // silently, insert a diagnostic `error` node where it was written — a plain box
+      // with an extra-bold red border (see the renderer) captioned with the offending
+      // line number and its verbatim content, so the mistake is visible in the diagram.
+      // (An invalid line that opened a `{` was already handled by the curly check.)
+      insertError(`invalid syntax\n${raw.trim()}`);
     }
 
     // Flush any frames still open at EOF (deepest first) so their entity-wide
@@ -1325,6 +1496,39 @@ export const parser = {
       if (generated.routing) line.routing = generated.routing;
     }
 
+    // With the tree and all explicit lines in place, resolve each plain line's
+    // named endpoints. An endpoint naming no entity becomes a diagnostic `error`
+    // node — a plain box with an extra-bold red border (see the renderer) captioned
+    // "line <#>: invalid target <name>". It is inserted as a SIBLING of the line's
+    // other (resolved) endpoint so it lands in a sensible container, or at the
+    // diagram root when neither end resolves; the line is then rewired to it so the
+    // broken link is still drawn. Only plain lines are checked (they alone keep a
+    // bare name that can go unresolved — complex lines resolve to entities up front).
+    const errIndex = new Map<string, Entity>();
+    const parentOf = new Map<Entity, Entity>();
+    const buildErrIndex = (e: Entity, parent: Entity): void => {
+      if (e.name && !errIndex.has(e.name)) errIndex.set(e.name, e);
+      parentOf.set(e, parent);
+      e.children.forEach((c) => buildErrIndex(c, e));
+    };
+    root.children.forEach((e) => buildErrIndex(e, root));
+    const resolveEnd = (ep: Entity | string): Entity | undefined =>
+      typeof ep === 'string' ? errIndex.get(ep) : ep;
+    for (const line of db.getLines()) {
+      const lineNo = lineNumbers.get(line);
+      if (lineNo === undefined) continue;
+      const source = resolveEnd(line.source);
+      const target = resolveEnd(line.target);
+      if (source && target) continue;
+      const errorNode = (name: string, sibling: Entity | undefined): Entity => {
+        const node = db.addEntity('', 'error', (sibling && parentOf.get(sibling)) ?? root);
+        node.label = `line ${lineNo}: invalid target "${name}"`;
+        return node;
+      };
+      if (!source) line.source = errorNode(line.source as string, target);
+      if (!target) line.target = errorNode(line.target as string, source);
+    }
+
     // With the tree and all explicit lines in place, auto-connect unlinked flow
     // children in every container whose (inherited) auto-sequence is on.
     applyAutoSequencing(root);
@@ -1333,6 +1537,10 @@ export const parser = {
 
 interface Frame {
   indent: number;
+  // Set on the frame a `{` opened: it is a curly-mode container barrier, popped
+  // only by a matching `}` (never by indentation). See the parse loop's curly
+  // handling. In curly mode `indent` is unused for popping.
+  curly?: boolean;
   // The container these lines nest under. The root frame's entity is the diagram
   // root, so every frame has one — "diagram scope" is just the outermost entity.
   entity: Entity;
