@@ -262,11 +262,10 @@
   # for most entities, label defaults to id
   pool Pool (White Box) :::bg-pool
     lane Lane 1 :::bg-lane
-      # no label
-      message start s1 ""
+      message start s1 "Message\ Start Event"
 
       # use absolute lines to connect entities by id
-      P1 --> s1
+      P1 --> s1 "Message Flow"
       d1 --- s1
 
       data object d1 "Data\ Object"
@@ -274,7 +273,7 @@
         # use relative lines to connect the current entity
         --> P1
 
-      event gate
+      event gate "Event-based\ Gateway"
         --> Receive Task
         --> t1
 
@@ -288,9 +287,10 @@
         auto-sequence off
         # change layout direction
         direction TB
-        user task
+        # suppress label with ""
+        user task u1 ""
         service task
-        timer boundary
+        timer boundary "Attached\ Intermediate\ Timer Event"
           --> Manual Task
 
       # use "|" to declare a multi-line label
@@ -300,13 +300,13 @@
           Event
 
       manual task Manual Task
-      end
+      end End Event
       data collection Collection
         Manual Task -->
 
     lane Lane 2 :::bg-lane
-      link catch
-      catch
+      link catch "Link\ Intermediate\ Event"
+      parallel catch "Parallel Multiple\ Intermediate\ Event"
       data store "Data\ Store"
         --> Subprocess
       subprocess Subprocess tb
@@ -315,9 +315,9 @@
         # See the example gallery for usage
         route depth:1
         region lr
-          start Start Event
+          start "Start\ Event"
           loop subprocess "Looped\ Subprocess"
-          end "End Event"
+          end "End\ Event"
 
         event subprocess Event Subprocess lr
           conditional start "Conditional\ Start Event"
@@ -374,7 +374,7 @@
       }
 
       parallel gate p2
-      message end "Message\\ End Event"
+      message end "Message\ End Event"
 `;
 
       const source = document.getElementById('source');
