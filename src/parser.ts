@@ -476,6 +476,7 @@ const ACTIVITY_TYPES = new Map<string, ActivityType>(withHyphenAliases([
   ['sub-process', 'subprocess'],
   ['process', 'subprocess'], // alias
   ['call', 'call'],
+  ['call-subprocess', 'call-subprocess'],
   ['event-subprocess', 'event-subprocess'],
   ['transaction', 'transaction'],
 ]));
@@ -506,6 +507,16 @@ const GATE_TYPES = new Map<string, GateType>([
   ['inclusive', 'inclusive'],
   ['parallel', 'parallel'],
   ['event', 'event'],
+  ['complex', 'complex'],
+]);
+
+// Boolean-operator aliases for the common gate types. Unlike the words in
+// GATE_TYPES, these may stand alone (`xor`) or precede an optional `gate`
+// (`xor gate`).
+const GATE_ALIASES = new Map<string, GateType>([
+  ['xor', 'exclusive'],
+  ['or', 'inclusive'],
+  ['and', 'parallel'],
 ]);
 
 const DATA_TYPES = new Map<string, DataType>([
@@ -595,6 +606,9 @@ interface EntityDraft {
   taskType?: TaskType;
   marker?: ActivityMarker;
   gateType?: GateType;
+  // A bare `gate` (no subtype): its type is left undefined here and resolved from
+  // the flow graph once the whole diagram is parsed (see resolveAutoGates).
+  autoGate?: boolean;
   dataType?: DataType;
   eventType?: EventType;
   eventOperation?: EventOperation;
@@ -627,14 +641,34 @@ function matchEntity(line: string): EntityDraft | null {
     return d;
   };
 
-  // gate: `<gate-type?> gate <id?>`
-  if (lc[0] === 'gate' || (GATE_TYPES.has(lc[0]) && lc[1] === 'gate')) {
-    const gi = lc[0] === 'gate' ? 0 : 1;
+  // gate: `<gate-type?> gate <id?>`, or a boolean-operator alias (`xor`, `or`,
+  // `and`) which stands alone or precedes an optional `gate`. `gate` and `join` are
+  // both bare (untyped) keywords; `join` may also precede an optional `gate`.
+  const gateAlias = GATE_ALIASES.get(lc[0]);
+  const bareGate = lc[0] === 'gate' || lc[0] === 'join';
+  if (
+    bareGate ||
+    (GATE_TYPES.has(lc[0]) && lc[1] === 'gate') ||
+    gateAlias !== undefined
+  ) {
     const d = draft('gate');
-    if (gi === 1) {
-      const gt = GATE_TYPES.get(lc[0]) as GateType;
-      if (gt !== 'exclusive') d.gateType = gt;
+    let gt: GateType = 'exclusive';
+    // Index of the type/alias/`gate` keyword; the id follows it.
+    let gi = 0;
+    if (gateAlias !== undefined) {
+      gt = gateAlias;
+      if (lc[1] === 'gate') gi = 1; // `xor gate` — skip the optional keyword
+    } else if (!bareGate) {
+      gt = GATE_TYPES.get(lc[0]) as GateType;
+      gi = 1;
+    } else {
+      // A bare `gate` / `join` with no subtype: its type is resolved after the whole
+      // diagram is parsed, from the fork it joins (see resolveAutoGates). Until then
+      // it is left as the exclusive default.
+      d.autoGate = true;
+      if (lc[0] === 'join' && lc[1] === 'gate') gi = 1; // `join gate` — skip the keyword
     }
+    if (gt !== 'exclusive') d.gateType = gt;
     d.name = tokens.slice(gi + 1).join(' ');
     return d;
   }
@@ -990,6 +1024,93 @@ function applyAutoSequencing(root: Entity): void {
   walk(root, false);
 }
 
+// --- auto gate resolution -----------------------------------------------------
+
+// A bare `gate` (no subtype) has an unresolved type until the whole diagram — every
+// explicit line, complex-line expansion, and auto-sequenced link — exists. This pass
+// then fixes each such gate's type from the flow graph.
+//
+// A gate with >1 incoming line is a JOIN; it should mirror the FORK (a gate with >1
+// outgoing line) that diverged the flow it merges. We find that fork by walking
+// backwards from the join along ANY one incoming line, matching nested fork/join
+// pairs with a counter. At each gate stepped on, in this order:
+//   1. a FORK (>1 outgoing) closes a level — if the counter is 0 it is the match (the
+//      join adopts its subtype), otherwise the counter is decremented;
+//   2. a JOIN (>1 incoming) opens a level — the counter is incremented.
+// A gate that is BOTH (>1 on each side) does step 1 then step 2, so it nets to no
+// change when unmatched yet can still be the match at level 0; a 1-in/1-out gate is
+// neither and passes straight through. Anything that ends the walk without a match —
+// a dead end, a cycle, or an auto gate that is not itself a join — leaves the gate at
+// the exclusive default. An unresolved auto fork counts as exclusive (its own
+// default), which `effectiveType` gives for free since auto and explicit-exclusive
+// gates alike carry no `gateType`.
+function resolveAutoGates(root: Entity, autoGates: Entity[]): void {
+  if (autoGates.length === 0) return;
+
+  const index = new Map<string, Entity>();
+  const build = (e: Entity): void => {
+    if (e.name && !index.has(e.name)) index.set(e.name, e);
+    e.children.forEach(build);
+  };
+  root.children.forEach(build);
+
+  // Flow predecessors (one entry per incoming line) plus a per-node outgoing-line
+  // count. A `---` counts both ways, as it does for auto-sequencing; endpoints that
+  // resolve to no entity are skipped. Each recorded edge src→dst is one outgoing line
+  // for src and one incoming line for dst.
+  const preds = new Map<Entity, Entity[]>();
+  const outCount = new Map<Entity, number>();
+  const addEdge = (src: Entity, dst: Entity): void => {
+    const list = preds.get(dst);
+    if (list) list.push(src);
+    else preds.set(dst, [src]);
+    outCount.set(src, (outCount.get(src) ?? 0) + 1);
+  };
+  for (const line of db.getLines()) {
+    const s = resolveEndpoint(line.source, index);
+    const t = resolveEndpoint(line.target, index);
+    if (!s || !t) continue;
+    if (line.type === '-->') addEdge(s, t);
+    else if (line.type === '<--') addEdge(t, s);
+    else {
+      addEdge(s, t);
+      addEdge(t, s);
+    }
+  }
+
+  const incoming = (e: Entity): number => preds.get(e)?.length ?? 0;
+  const outgoing = (e: Entity): number => outCount.get(e) ?? 0;
+  // A gate's subtype for matching: its explicit type, else exclusive — which also
+  // covers an unresolved auto gate, whose own default is exclusive.
+  const effectiveType = (g: Entity): GateType => g.gateType ?? 'exclusive';
+
+  for (const gate of autoGates) {
+    if (incoming(gate) <= 1) continue; // only a join (>1 incoming) is resolved
+    let nesting = 0;
+    const visited = new Set<Entity>([gate]);
+    let current = gate;
+    // Walk backwards until a match, or a dead end / cycle (→ the exclusive default).
+    for (;;) {
+      const prev = preds.get(current)?.[0]; // pick any incoming line — the first
+      if (!prev || visited.has(prev)) break;
+      visited.add(prev);
+      current = prev;
+      if (current.type !== 'gate') continue; // a non-gate: keep walking backwards
+      // A fork closes a level, and at level 0 is the match. A both-sided gate falls
+      // through to the join step below; a 1-in/1-out gate matches neither.
+      if (outgoing(current) > 1) {
+        if (nesting === 0) {
+          const t = effectiveType(current); // the matching fork — adopt its subtype
+          if (t !== 'exclusive') gate.gateType = t;
+          break;
+        }
+        nesting--;
+      }
+      if (incoming(current) > 1) nesting++; // a join opens a level
+    }
+  }
+}
+
 export const parser = {
   parse(text: string): void {
     db.clear();
@@ -1022,6 +1143,10 @@ export const parser = {
     // Complex lines are collected and expanded after the tree is fully built,
     // since resolving absolute endpoints may reference entities declared later.
     const complexSpecs: ComplexLineSpec[] = [];
+
+    // Bare `gate` nodes, whose subtype is resolved from the flow graph once the whole
+    // diagram (lines included) exists — see resolveAutoGates.
+    const autoGates: Entity[] = [];
 
     // The 1-based source line each plain line was written on, so the endpoint pass
     // (run after the tree is complete) can name the offending line in a diagnostic
@@ -1447,6 +1572,7 @@ export const parser = {
         if (draft.taskType) node.taskType = draft.taskType;
         if (draft.marker) node.marker = draft.marker;
         if (draft.gateType) node.gateType = draft.gateType;
+        if (draft.autoGate) autoGates.push(node);
         if (draft.dataType) node.dataType = draft.dataType;
         if (draft.eventType) node.eventType = draft.eventType;
         if (draft.eventOperation) node.eventOperation = draft.eventOperation;
@@ -1532,6 +1658,10 @@ export const parser = {
     // With the tree and all explicit lines in place, auto-connect unlinked flow
     // children in every container whose (inherited) auto-sequence is on.
     applyAutoSequencing(root);
+
+    // Finally, with every line — explicit, expanded, and auto-sequenced — in place,
+    // resolve each bare `gate`'s subtype from the flow graph.
+    resolveAutoGates(root, autoGates);
   },
 };
 

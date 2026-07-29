@@ -242,8 +242,8 @@ function canHaveIcon(type: EntityType): boolean {
 
 // The bpmn-pack icon specs for the markers drawn in an activity's bottom row,
 // in draw order. A loop or multi-instance activity gets its loop/bar marker first;
-// a `collapsed` expandable activity (a subprocess/event-subprocess/transaction
-// drawn without its children) gets the composite `+` LAST. These are independent of
+// a `collapsed` expandable activity (a subprocess/call-subprocess/event-subprocess/
+// transaction drawn without its children) gets the composite `+` LAST. These are independent of
 // the task-type glyph (which is drawn with the caption). The `compensation` marker
 // reuses the bpmn `compensation-in` glyph.
 function activityMarkerSpecs(entity: Entity, collapsed: boolean): string[] {
@@ -2296,8 +2296,9 @@ function drawBoundaryEvent(
 }
 
 // Draws an activity's rounded-rectangle outline, its border chosen by the activity
-// type: `task`/`subprocess` keep the plain single border; `call` gets a bold
-// (double width) one; `event-subprocess` a dotted one; `transaction` a double
+// type: `task`/`subprocess` keep the plain single border; `call` and
+// `call-subprocess` get a bold (double width) one; `event-subprocess` a dotted one;
+// `transaction` a double
 // outline drawn with thinner lines (an inner rect inset from the outer). The fill
 // rides on the outer/only rect; the transaction's inner rect is unfilled so the
 // fill shows through the gap between the two lines.
@@ -2334,6 +2335,7 @@ function drawActivityShape(
 
   switch (activityType) {
     case 'call':
+    case 'call-subprocess':
       svg.appendChild(rect(0, true, ACTIVITY_THICK));
       break;
     case 'event-subprocess':

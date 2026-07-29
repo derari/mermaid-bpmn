@@ -116,23 +116,26 @@ describe('bpmn parser', () => {
         'subprocess T2',
         'process T3',
         'call T4',
-        'event-subprocess T5',
-        'transaction T6',
+        'call-subprocess T5',
+        'event-subprocess T6',
+        'transaction T7',
       );
       expect(db.getEntities().map((e) => e.activityType)).toEqual([
         'task',
         'subprocess',
         'subprocess',
         'call',
+        'call-subprocess',
         'event-subprocess',
         'transaction',
       ]);
     });
 
     it('peels a trailing direction on every container activity, keeping the id', () => {
-      parse('subprocess S LR', 'event-subprocess E TB', 'transaction X RL');
+      parse('subprocess S LR', 'call-subprocess C TB', 'event-subprocess E TB', 'transaction X RL');
       expect(db.getEntities()).toEqual([
         activity({ name: 'S', activityType: 'subprocess', direction: 'LR' }),
+        activity({ name: 'C', activityType: 'call-subprocess', direction: 'TB' }),
         activity({ name: 'E', activityType: 'event-subprocess', direction: 'TB' }),
         activity({ name: 'X', activityType: 'transaction', direction: 'RL' }),
       ]);
@@ -153,6 +156,8 @@ describe('bpmn parser', () => {
         'subprocess C',
         'event subprocess D',
         'eventsubprocess E',
+        'call subprocess J',
+        'callsubprocess K',
         'ad hoc task F',
         'adhoc task G',
         'receive instance task H',
@@ -164,6 +169,8 @@ describe('bpmn parser', () => {
         activity({ name: 'C', activityType: 'subprocess' }),
         activity({ name: 'D', activityType: 'event-subprocess' }),
         activity({ name: 'E', activityType: 'event-subprocess' }),
+        activity({ name: 'J', activityType: 'call-subprocess' }),
+        activity({ name: 'K', activityType: 'call-subprocess' }),
         activity({ name: 'F', marker: 'adhoc' }),
         activity({ name: 'G', marker: 'adhoc' }),
         activity({ name: 'H', taskType: 'receive-instance' }),
@@ -267,8 +274,162 @@ describe('bpmn parser', () => {
     });
 
     it('parses the gate types', () => {
-      parse('inclusive gate a', 'parallel gate b', 'event gate c');
-      expect(db.getEntities().map((e) => e.gateType)).toEqual(['inclusive', 'parallel', 'event']);
+      parse('inclusive gate a', 'parallel gate b', 'event gate c', 'complex gate d');
+      expect(db.getEntities().map((e) => e.gateType)).toEqual([
+        'inclusive',
+        'parallel',
+        'event',
+        'complex',
+      ]);
+    });
+
+    it('accepts boolean-operator aliases, standing alone', () => {
+      parse('xor a', 'or b', 'and c');
+      expect(db.getEntities()).toEqual([
+        { name: 'a', type: 'gate', children: [] }, // xor → exclusive (default, unset)
+        { name: 'b', type: 'gate', gateType: 'inclusive', children: [] },
+        { name: 'c', type: 'gate', gateType: 'parallel', children: [] },
+      ]);
+    });
+
+    it('accepts boolean-operator aliases followed by an optional gate keyword', () => {
+      parse('xor gate a', 'or gate b', 'and gate c');
+      expect(db.getEntities().map((e) => e.gateType)).toEqual([
+        undefined, // xor → exclusive (default, unset)
+        'inclusive',
+        'parallel',
+      ]);
+    });
+
+    it('accepts `join` and `join gate` as aliases for a bare gate', () => {
+      parse('join a', 'join gate b', 'join');
+      expect(db.getEntities()).toEqual([
+        { name: 'a', type: 'gate', children: [] },
+        { name: 'b', type: 'gate', children: [] },
+        { name: '', type: 'gate', children: [] },
+      ]);
+    });
+  });
+
+  describe('auto gate resolution', () => {
+    // Finds an entity by name anywhere in the tree.
+    const byName = (name: string): Entity | undefined => {
+      const find = (nodes: Entity[]): Entity | undefined => {
+        for (const n of nodes) {
+          if (n.name === name) return n;
+          const hit = find(n.children);
+          if (hit) return hit;
+        }
+        return undefined;
+      };
+      return find(db.getEntities());
+    };
+    // The four lines of a diamond: fork splits to A and B, which merge at join.
+    const diamond = ['fork --> A', 'fork --> B', 'A --> join', 'B --> join'];
+
+    it('resolves a bare join to the type of the split it merges (parallel)', () => {
+      parse('parallel gate fork', 'task A', 'task B', 'gate join', ...diamond);
+      expect(byName('join')?.gateType).toBe('parallel');
+    });
+
+    it('resolves a bare join through an inclusive (or) split', () => {
+      parse('or fork', 'task A', 'task B', 'gate join', ...diamond);
+      expect(byName('join')?.gateType).toBe('inclusive');
+    });
+
+    it('resolves the `join` keyword like a bare gate', () => {
+      parse('parallel gate fork', 'task A', 'task B', 'join j', ...diamond.map((l) => l.replace('join', 'j')));
+      expect(byName('j')?.gateType).toBe('parallel');
+    });
+
+    it('leaves an auto join exclusive when its split is itself a bare (auto) gate', () => {
+      // The footnote: an unresolved auto split counts as exclusive.
+      parse('gate fork', 'task A', 'task B', 'gate join', ...diamond);
+      expect(byName('fork')?.gateType).toBeUndefined();
+      expect(byName('join')?.gateType).toBeUndefined();
+    });
+
+    it('leaves a bare fork (>1 outgoing, <=1 incoming) exclusive', () => {
+      parse('parallel gate up', 'gate fork', 'task A', 'task B', 'up --> fork', 'fork --> A', 'fork --> B');
+      // `fork` has one incoming — it is a split, not a join — so it stays exclusive
+      // rather than inheriting the parallel gate feeding it.
+      expect(byName('fork')?.gateType).toBeUndefined();
+    });
+
+    it('defaults to exclusive when the backward walk finds no split', () => {
+      // join has 2 incoming but neither branch traces back to a gate.
+      parse('task A', 'task B', 'gate join', 'A --> join', 'B --> join');
+      expect(byName('join')?.gateType).toBeUndefined();
+    });
+
+    it('skips a nested join/split pair via the nesting counter', () => {
+      // An exclusive fork/join diamond nested inside a parallel one: the outer join
+      // must match the OUTER (parallel) fork, stepping over the inner pair.
+      parse(
+        'parallel gate pfork',
+        'exclusive gate xfork',
+        'task A',
+        'task B',
+        'task C',
+        'gate xjoin',
+        'gate pjoin',
+        'pfork --> xfork',
+        'pfork --> C',
+        'xfork --> A',
+        'xfork --> B',
+        'A --> xjoin',
+        'B --> xjoin',
+        'xjoin --> pjoin',
+        'C --> pjoin',
+      );
+      expect(byName('xjoin')?.gateType).toBeUndefined(); // matches the exclusive xfork
+      expect(byName('pjoin')?.gateType).toBe('parallel'); // matches the parallel pfork
+    });
+
+    it('matches a gate that is both a join and a fork (>1 on both sides) as the fork', () => {
+      // `mid` merges A,B and splits to C,D — a gate with >1 incoming AND >1 outgoing.
+      // The downstream join must recognise it as its fork and adopt its (parallel) type.
+      parse(
+        'task A',
+        'task B',
+        'parallel gate mid',
+        'task C',
+        'task D',
+        'gate join',
+        'A --> mid',
+        'B --> mid',
+        'mid --> C',
+        'mid --> D',
+        'C --> join',
+        'D --> join',
+      );
+      expect(byName('join')?.gateType).toBe('parallel');
+    });
+
+    it('passes straight through a 1-in/1-out gate when matching', () => {
+      // `pass` (one in, one out) is neither fork nor join; the join still matches the
+      // parallel fork upstream of it.
+      parse(
+        'parallel gate fork',
+        'task A',
+        'task B',
+        'gate pass',
+        'gate join',
+        'fork --> A',
+        'fork --> B',
+        'A --> pass',
+        'pass --> join',
+        'B --> join',
+      );
+      expect(byName('pass')?.gateType).toBeUndefined();
+      expect(byName('join')?.gateType).toBe('parallel');
+    });
+
+    it('defaults to exclusive without looping on an undirected cycle', () => {
+      // `---` counts as incoming both ways, so `join` has 2 incoming and a backward
+      // walk immediately revisits itself — the cycle guard bails to the default.
+      parse('task A', 'task B', 'gate join', 'A --- join', 'B --- join');
+      expect(byName('join')?.gateType).toBeUndefined();
     });
   });
 

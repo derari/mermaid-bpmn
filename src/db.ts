@@ -29,9 +29,17 @@ export type EntityType =
   | 'error';
 
 // An activity's shape family. `task` and `call` are atomic (only boundary events
-// nest inside them); `subprocess` (alias `process`), `event-subprocess`, and
-// `transaction` are expandable containers that hold the same children a lane can.
-export type ActivityType = 'task' | 'subprocess' | 'call' | 'event-subprocess' | 'transaction';
+// nest inside them); `subprocess` (alias `process`), `event-subprocess`,
+// `call-subprocess`, and `transaction` are expandable containers that hold the same
+// children a lane can. `call-subprocess` is a subprocess-shaped container drawn with
+// a call activity's bold border.
+export type ActivityType =
+  | 'task'
+  | 'subprocess'
+  | 'call'
+  | 'call-subprocess'
+  | 'event-subprocess'
+  | 'transaction';
 
 // The task-type glyph drawn in an activity's corner. Undefined (the default) is an
 // abstract task with no glyph.
@@ -57,8 +65,9 @@ export type ActivityMarker =
   | 'compensation'
   | 'adhoc';
 
-// A gateway's kind. `exclusive` (XOR) is the default.
-export type GateType = 'exclusive' | 'inclusive' | 'parallel' | 'event';
+// A gateway's kind. `exclusive` (XOR) is the default. `complex` is drawn as an
+// asterisk (the exclusive X overlaid on the parallel +).
+export type GateType = 'exclusive' | 'inclusive' | 'parallel' | 'event' | 'complex';
 
 // A data element's kind. `object` (a data object) is the default; `store` is a
 // data store; `collection` is a data object carrying the multi-instance parallel
@@ -99,6 +108,7 @@ export type EventOperation =
 // they only accept boundary events.
 export const ACTIVITY_CONTAINER_TYPES: ReadonlySet<ActivityType> = new Set<ActivityType>([
   'subprocess',
+  'call-subprocess',
   'event-subprocess',
   'transaction',
 ]);

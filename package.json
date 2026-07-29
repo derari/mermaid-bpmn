@@ -41,7 +41,7 @@
     "build": "tsup src/index.ts --format esm --dts --clean",
     "test": "vitest run",
     "test:watch": "vitest",
-    "gen:icons": "node scripts/gen-bpmn-icons.mjs",
+    "gen:icons": "node scripts/generate-bpmn-icons.mjs",
     "icons:update": "npm install -D @iconify-json/mdi@latest && npm run gen:icons",
     "dev": "vite",
     "build:examples": "vite build",

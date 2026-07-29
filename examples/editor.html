@@ -356,7 +356,7 @@
 
       signal end sig-end "Signal\ End Event"
       call Call Activity
-      gate x2 "Exclusive\ Gateway"
+      exclusive gate x2 "Exclusive\ Gateway"
       parallel gate "Parallel\ Gateway"
         --> pt
         --> Send Task
@@ -372,8 +372,9 @@
         pt --> p2
         Send Task --> p2
       }
+      # "join" automatically detects the correct gate type
+      join p2
 
-      parallel gate p2
       message end "Message\ End Event"
 `;
 

@@ -64,6 +64,7 @@ bpmn
 | `task`                         | an atomic task            | boundary events only                                       |
 | `call`                         | a call activity           | boundary events only                                       |
 | `subprocess` (alias `process`) | an expandable sub-process | activities, gateways, data, events, regions, groups, ports |
+| `call subprocess`              | a call sub-process (bold border) | same as `subprocess`                                |
 | `event subprocess`             | an event sub-process      | same as `subprocess`                                       |
 | `transaction`                  | a transaction             | same as `subprocess`                                       |
 
@@ -159,10 +160,13 @@ marker** inside it:
 <gate-type?> gate <id?> "<label?>"
 ```
 
-The gate type — `exclusive` (the default), `inclusive`, `parallel`, or `event` —
-selects the marker, drawn from the always-available [`bpmn`](#the-bpmn-icon-pack)
-pack: an **X** (exclusive), a **ring** (inclusive), a **plus** (parallel), or a
-**pentagon** (event). An explicit [`icon`](#icons) overrides it.
+The gate type — `exclusive` (the default), `inclusive`, `parallel`, `event`, or
+`complex` — selects the marker, drawn from the always-available
+[`bpmn`](#the-bpmn-icon-pack) pack: an **X** (exclusive), a **ring** (inclusive), a
+**plus** (parallel), a **pentagon** (event), or an **asterisk** (complex). An
+explicit [`icon`](#icons) overrides it. `exclusive`, `inclusive`, and `parallel`
+also have the boolean-operator aliases `xor`, `or`, and `and` — each standing alone
+or before an optional `gate` (both `xor` and `xor gate` work).
 
 ````
 ```bpmn
@@ -171,6 +175,7 @@ bpmn
   inclusive gate g2
   parallel gate g3
   event gate g4
+  complex gate g5
 ```
 ````
 
@@ -180,7 +185,7 @@ and join flow:
 ````
 ```bpmn
 bpmn
-  gate fork
+  inclusive gate fork
   task A
   task B
   gate join
@@ -190,6 +195,14 @@ bpmn
   B --> join
 ```
 ````
+
+A bare `gate` carries no explicit type, and neither does `join` — an alias for
+`gate`, optionally written `join gate`. Such a gate's type is **resolved after the
+diagram is parsed**: a gate with more than one incoming line is treated as a join and
+adopts the type of the fork it merges, found by walking the flow backwards (matching
+nested fork/join pairs along the way). With no such fork it stays exclusive. In the
+example above the untyped `join` gateway therefore takes the `inclusive` type of its
+fork.
 
 ### Events
 
@@ -711,7 +724,7 @@ bpmn LR
 ```
 ````
 
-A `subprocess`, `event subprocess`, or `transaction` can also take its direction
+A `subprocess`, `call subprocess`, `event subprocess`, or `transaction` can also take its direction
 inline as a trailing token, the same way a `region` or `group` does
 (`subprocess Frontend TB`) — equivalent to a nested `direction` statement.
 
@@ -859,7 +872,7 @@ Everything below is for working on `mermaid-bpmn` itself, not for using it.
 | `src/styleModel.ts`          | Resolves classes/`style`/inheritance into a concrete fill + outline + icon per entity — pure, unit-tested                                                   |
 | `src/icons.ts`               | Icon-pack registry (incl. the always-on `bpmn` pack), lazy loading, and resolving `icon:pack:name` to inline SVG                                            |
 | `src/bpmnIcons.ts`           | Generated: the bundled `bpmn` icon pack — MDI-derived glyphs plus hand-drawn gateway/event markers. Regenerate with `npm run gen:icons`                     |
-| `scripts/gen-bpmn-icons.mjs` | Build-time generator: extracts the MDI icons from `@iconify-json/mdi` (a devDependency) and merges the hand-drawn gateway/event markers into `bpmnIcons.ts` |
+| `scripts/generate-bpmn-icons.mjs` | Build-time generator: extracts the MDI icons from `@iconify-json/mdi` (a devDependency) and merges the hand-drawn gateway/event markers into `bpmnIcons.ts` |
 | `src/portTypes.ts`           | Flags invalid port lines (an arrowhead landing on a port) — pure, unit-tested                                                                               |
 | `src/theme.ts`               | Bridges Mermaid's resolved theme variables into the renderer's palette (fill/stroke/line)                                                                   |
 | `src/renderer.ts`            | Lays out with elkjs, draws the SVG via the DOM; applies the plan from `routePlan.ts`                                                                        |

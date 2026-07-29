@@ -25,6 +25,7 @@ export const cases = [
   task "Task"
   subprocess "Subprocess"
   call "Call activity"
+  call-subprocess "Call subprocess"
   event-subprocess "Event subprocess"
   transaction "Transaction"`,
   },
@@ -118,16 +119,26 @@ export const cases = [
   // --- Gateways -------------------------------------------------------------
   {
     title: 'All gate types',
-    code: `bpmn
-  gate g1
-  inclusive gate g2
-  parallel gate g3
-  event gate g4`,
+    code: `bpmn tb
+  region "Standard Syntax" LR
+    exclusive gate
+    inclusive gate
+    parallel gate
+    event gate
+    complex gate
+  region "Aliases" LR
+    gate
+    xor
+    xor gate
+    or
+    or gate
+    and
+    and gate`,
   },
   {
     title: 'Gateway fork and join',
     code: `bpmn
-  gate fork
+  inclusive gate fork
   task A
   task B
   gate join
@@ -135,6 +146,27 @@ export const cases = [
   fork --> B
   A --> join
   B --> join`,
+  },
+  {
+    title: 'Gateway fork and automatic join',
+    code: `bpmn
+  auto-sequence
+  start
+  inclusive gate
+    --> A
+    --> fork2
+  parallel gate fork2
+    --> B
+    --> C
+  task A
+  task B
+  task C
+  join
+    B -->
+    C -->
+  join
+    A -->
+  end`,
   },
   // --- Events ---------------------------------------------------------------
   {

@@ -20,7 +20,7 @@ assets under their own licenses, listed here.
 - **Modifications:** a subset of icons was extracted from MDI and re-keyed to BPMN
   names (some copied under more than one name); the `manual` glyph was rotated 90°
   clockwise. The path data is otherwise unmodified. Regenerate with
-  `node scripts/gen-bpmn-icons.mjs`.
+  `node scripts/generate-bpmn-icons.mjs`.
 
 | `bpmn` name(s)                     | MDI source name          |
 | ------------------------------------- | ------------------------ |
