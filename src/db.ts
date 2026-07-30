@@ -1,6 +1,13 @@
-// Mermaid's canonical layout directions. `TD` (top-down) is an alias for `TB`
-// used by flowchart; we normalize it away on the way in.
-export type Direction = 'TB' | 'BT' | 'LR' | 'RL';
+// The layout vocabulary is owned by the diagram-agnostic layout engine
+// (`layout/model.ts`) and re-exported here so the DSL side has one import site and
+// the two can never drift apart. `Direction` holds Mermaid's canonical layout
+// directions — `TD` (top-down) is a flowchart alias for `TB`, normalized away on the
+// way in. `Side` is a compass box side, `LineType` a line's arrow kind, and
+// `RouteSpec` the validated `route` vocabulary (see layout/model.ts for the knobs
+// and their defaults).
+import type { Direction, LineType, RouteSpec, Side } from './layout/model.js';
+
+export type { Direction, LineType, RouteSpec, Side } from './layout/model.js';
 
 // Every entity has a coarse `type` that fixes its BPMN family. `pool` and `lane`
 // are the swimlane containers; `activity`, `gate`, `data`, and `event` are the
@@ -238,44 +245,12 @@ export function entityLabel(entity: Entity): string {
   return NAME_AS_LABEL_TYPES.has(entity.type) ? entity.name : '';
 }
 
-// A connection between two entities. `---` is undirected; `-->` points from the
-// source to the target; `<--` points the other way (target to source).
-export type LineType = '---' | '-->' | '<--';
-
 // A slash (a short diagonal tick) drawn across a line end, from a leading or
 // trailing `/` on the connector (`/--`, `--/`, `/-->`, `<--/`). `start` marks the
 // source end (a leading `/`), `end` the target end (a trailing `/`), and `both`
 // either end. In BPMN a slash near the source is the default-sequence-flow marker.
 // It is orthogonal to the arrow direction, so any `LineType` may carry one.
 export type SlashEnd = 'start' | 'end' | 'both';
-
-// A box side, in compass terms: north/east/south/west.
-export type Side = 'n' | 'e' | 's' | 'w';
-
-// Explicit routing hints a `route` statement attaches to a line. Unlike `style`
-// (a CSS-passthrough appearance bag), routing is about layout, so it lives in its
-// own field with a validated vocabulary. Every knob is optional; the renderer
-// fills in defaults (`exit:auto enter:auto depth:1 bend:auto`) and only ever consults
-// routing for a line that crosses a container boundary.
-//
-//  - `exit`  which side of the crossed container the line leaves; `auto` derives
-//            the axis from the container's flow direction and the sign from the
-//            target's position.
-//  - `enter` which side of the crossed container the line enters on the target
-//            side; `auto` faces the source's exit (the side opposite `exit`).
-//  - `depth` how many nesting levels get an ELK-routed port (the port chain);
-//            the remainder is hand-routed. `0` is fully hand-routed.
-//  - `bend`  the hand-routed segment's shape: `z` = HVH, `n` = VHV, `l` = a single
-//            corner (HV or VH, the axis taken from the source's exit edge); `auto`
-//            picks `l` when the exit and enter edges are perpendicular, else — if an
-//            endpoint is pinned to an edge (a port) — the z/n axis of that edge,
-//            otherwise the axis the endpoints are more separated along.
-export interface RouteSpec {
-  exit?: Side | 'auto';
-  enter?: Side | 'auto';
-  depth?: number | 'auto';
-  bend?: 'z' | 'n' | 'l' | 'auto';
-}
 
 // A line's endpoints are resolved to entities only at render time, since an
 // absolute line may reference an entity declared later in the source.

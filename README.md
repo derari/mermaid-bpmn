@@ -801,10 +801,14 @@ To see where ports land, enable the [`debug ports`](#debugging-ports) overlay.
 
 ### Cross-boundary routing
 
-When a line crosses between containers that flow in **different directions**, it is
-routed by hand rather than by the automatic layout. A `route` statement nested
-under the line tunes how — which side it leaves and enters, how far it tunnels
-before crossing, and the shape of the crossing:
+Most lines need no help: the layout engine keeps the diagram **flat** wherever it
+can, so a line runs through any number of containers as one automatically routed
+edge. The exception is a container that has to keep its **own flow direction** —
+every pool, and any container whose direction differs from its parent's *and* which
+holds more than one box. Those are laid out on their own (a **black box**), and the
+layout engine cannot route an edge across one. A line that crosses a black box is
+therefore drawn **by hand**, and a `route` statement nested under the line tunes it
+— which side it leaves and enters, and the shape of the crossing:
 
 ````
 ```bpmn
@@ -816,17 +820,39 @@ bpmn TB
     task C
     task D
   A --> C
-    route exit:s depth:1 bend:z
+    route exit:s bend:z
+```
+````
+
+`depth` is the one knob that changes the *kind* of crossing rather than its shape.
+It defaults to **0**: the crossing is a single hand-drawn segment, which comes out
+short and predictable because we choose both of its ends. Raising it (`depth:auto`,
+or `depth:N` for at most N crossings) instead threads the real container boundaries
+with automatic connection points — truer to the nesting, but the layout engine picks
+where each point sits and can route the join well off the direct path, so it is
+opt-in:
+
+````
+```bpmn
+bpmn TB
+  region Left LR
+    task A
+    task B
+  region Right TB
+    task C
+  A --> C
+    route depth:auto
 ```
 ````
 
 A `route` may also sit under an **entity** (a default for every line in its
 subtree) or at the **diagram root** (a default for the whole diagram); when routes
-are set at more than one level, the **closest** one wins per setting. A `route` on
-a line that crosses no boundary has nothing to tune and is reported with a console
-warning.
+are set at more than one level, the **closest** one wins per setting. Because every
+key defaults to "do the automatic thing", an all-default `route` (`depth:0` on its
+own, say) is indistinguishable from no `route` at all. A `route` on a line that
+crosses no boundary has nothing to tune and is reported with a console warning.
 
-The full set of keys, their values, and worked examples are in
+The full set of keys, the black-box model, and worked examples are in
 [docs/routing.md](docs/routing.md).
 
 ### Debugging ports
@@ -849,9 +875,17 @@ bpmn TB
 ```
 ````
 
-While the overlay is on, every hand-routed (crossing) line is also drawn in
-**blue**, so you can tell at a glance which lines the router tunnelled by hand
-from the plain ELK-routed ones.
+While the overlay is on it also marks the structure the router is working against:
+
+- every hand-drawn (crossing) line is drawn in **blue**, so you can tell at a glance
+  which lines were routed by hand and which by the layout engine;
+- every **black box** — a container laid out on its own, so no edge can be routed
+  across it — is outlined in **orange** dash-dash-dot-dot;
+- any **wrapper** the router inserted inside a black box to flatten its interior is
+  filled translucent **magenta**.
+
+Together those say why a given line came out hand-drawn: it had to cross an orange
+outline. See [docs/routing.md](docs/routing.md) for the model behind them.
 
 The directive is only valid at the root — nested under an entity it is dropped
 with a console warning.
@@ -862,25 +896,41 @@ Everything below is for working on `mermaid-bpmn` itself, not for using it.
 
 ### Project layout
 
-| Path                         | What it is                                                                                                                                                  |
-|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `src/index.ts`               | The `ExternalDiagramDefinition` — id (`bpmn`), detector, lazy loader                                                                                        |
-| `src/diagram.ts`             | Wires db + parser + renderer + styles together; captures the theme config getter via `injectUtils`                                                          |
-| `src/parser.ts`              | Line-oriented parser: indent stack for nesting, keyword dispatch per line, BPMN entity grammar                                                              |
-| `src/complexLines.ts`        | Expands complex lines (id-only chains) into one plain line per arrow — pure, unit-tested                                                                    |
-| `src/db.ts`                  | In-memory entity tree, connection list, layout direction, and style declarations (classDefs, named styles/classes)                                          |
-| `src/styleModel.ts`          | Resolves classes/`style`/inheritance into a concrete fill + outline + icon per entity — pure, unit-tested                                                   |
-| `src/icons.ts`               | Icon-pack registry (incl. the always-on `bpmn` pack), lazy loading, and resolving `icon:pack:name` to inline SVG                                            |
-| `src/bpmnIcons.ts`           | Generated: the bundled `bpmn` icon pack — MDI-derived glyphs plus hand-drawn gateway/event markers. Regenerate with `npm run gen:icons`                     |
+| Path                              | What it is                                                                                                                                                  |
+|-----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `src/index.ts`                    | The `ExternalDiagramDefinition` — id (`bpmn`), detector, lazy loader                                                                                        |
+| `src/diagram.ts`                  | Wires db + parser + renderer + styles together; captures the theme config getter via `injectUtils`                                                          |
+| `src/parser.ts`                   | Line-oriented parser: indent stack for nesting, keyword dispatch per line, BPMN entity grammar                                                              |
+| `src/complexLines.ts`             | Expands complex lines (id-only chains) into one plain line per arrow — pure, unit-tested                                                                    |
+| `src/db.ts`                       | In-memory entity tree, connection list, layout direction, and style declarations (classDefs, named styles/classes)                                          |
+| `src/styleModel.ts`               | Resolves classes/`style`/inheritance into a concrete fill + outline + icon per entity — pure, unit-tested                                                   |
+| `src/icons.ts`                    | Icon-pack registry (incl. the always-on `bpmn` pack), lazy loading, and resolving `icon:pack:name` to inline SVG                                            |
+| `src/bpmnIcons.ts`                | Generated: the bundled `bpmn` icon pack — MDI-derived glyphs plus hand-drawn gateway/event markers. Regenerate with `npm run gen:icons`                     |
 | `scripts/generate-bpmn-icons.mjs` | Build-time generator: extracts the MDI icons from `@iconify-json/mdi` (a devDependency) and merges the hand-drawn gateway/event markers into `bpmnIcons.ts` |
-| `src/portTypes.ts`           | Flags invalid port lines (an arrowhead landing on a port) — pure, unit-tested                                                                               |
-| `src/theme.ts`               | Bridges Mermaid's resolved theme variables into the renderer's palette (fill/stroke/line)                                                                   |
-| `src/renderer.ts`            | Lays out with elkjs, draws the SVG via the DOM; applies the plan from `routePlan.ts`                                                                        |
-| `src/routePlan.ts`           | Pure line-routing decisions (flatten vs. port chains, exit side, depth, join/bridge, arrow placement) — unit-tested                                         |
-| `src/geometry.ts`            | Pure layout math (region tiling, stadium-cap geometry, edge common-ancestor) — no DOM/ELK, unit-tested                                                      |
-| `src/styles.ts`              | Theme-aware CSS injected into the diagram's `<svg>`                                                                                                         |
-| `test/`                      | Vitest tests: parser, db, style resolution, geometry, the route planner, icons, plus real-ELK routing checks                                                |
-| `examples/`                  | Visual playground you open in a browser                                                                                                                     |
+| `src/portTypes.ts`                | Flags invalid port lines (an arrowhead landing on a port) — pure, unit-tested                                                                               |
+| `src/theme.ts`                    | Bridges Mermaid's resolved theme variables into the renderer's palette (fill/stroke/line)                                                                   |
+| `src/render.ts`                   | The orchestrator: builds the ELK tree, runs the routing engine, lays out with elkjs, drives the draw pass                                                   |
+| `src/bpmnStyle.ts`                | Everything BPMN-SPECIFIC: how each family is sized and drawn, boundary-event ports, pool/lane fitting, per-line style. Swap this file for another notation  |
+| `src/layout/`                     | The notation-agnostic layout engine (see below) — it never mentions a BPMN family                                                                           |
+| `src/geometry.ts`                 | Pure layout math (region tiling, cap geometry, edge common-ancestor) — no DOM/ELK, unit-tested                                                              |
+| `src/styles.ts`                   | Theme-aware CSS injected into the diagram's `<svg>`                                                                                                         |
+| `test/`                           | Vitest tests: parser, db, style resolution, geometry, the route planner, icons, plus real-ELK shape and routing checks                                      |
+| `examples/`                       | Visual playground you open in a browser                                                                                                                     |
+
+The layout engine under `src/layout/` is deliberately notation-agnostic — it works
+against ELK node ids, flow directions, and a small adapter the diagram style supplies,
+so the routing model can be reasoned about (and tested) without any BPMN vocabulary in
+the way:
+
+| Path                      | What it is                                                                                                                                            |
+|---------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `src/layout/model.ts`     | The shared vocabulary: flow direction, box side, line kind, and the validated `route` spec with its defaults                                          |
+| `src/layout/routePlan.ts` | Pure routing decisions: direction normalization, the black-box set, interior wrappers, and the per-line plan (ports, segments, bridges) — unit-tested |
+| `src/layout/elk.ts`       | Turns each planned line into ELK edges and ports, and sets every container's hierarchy handling                                                       |
+| `src/layout/edges.ts`     | Draws the connections: polylines, markers, the message-flow / data-association variants, slashes, labels                                              |
+| `src/layout/geometry.ts`  | Pure edge geometry: bend shapes, diagonalised steps, rounded paths — unit-tested                                                                      |
+| `src/layout/text.ts`      | Caption measuring and drawing, including multi-line labels                                                                                            |
+| `src/layout/svg.ts`       | The one SVG element helper                                                                                                                            |
 
 ### Working on it
 

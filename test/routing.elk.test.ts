@@ -1,21 +1,24 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { db } from '../src/db.js';
 import { parser } from '../src/parser.js';
-import { renderer } from '../src/renderer.js';
+import { renderer } from '../src/render.js';
 
 // Integration tests that run the REAL renderer (ELK layout + SVG build) under a
 // minimal DOM stub. They cover only what the pure planRoute tests cannot: that a
 // plan, once applied, actually routes through ELK — including the port chain
-// climbing through a flattened container (rule 3), which is the ELK behaviour the
-// whole design hinges on — and that heads land correctly in the final geometry.
-// The routing logic is family-agnostic, so activities/regions/ports stand in for
-// the old actor/storage boxes.
+// climbing through a flattened container, which is the ELK behaviour the whole
+// design hinges on — and that heads land correctly in the final geometry.
+//
+// The routing engine is diagram-agnostic, so the BPMN families here are stand-ins:
+// `region` groups without drawing, `subprocess` is the container with children,
+// `task` the leaf, and a `port` is the declared border anchor. What matters is the
+// nesting and the per-container direction, not which shape gets drawn. The BPMN
+// shape vocabulary itself is covered by `shapes.elk.test.ts`.
 
 class El {
   nodeName: string;
   children: El[] = [];
   attrs: Record<string, string> = {};
-  html = '';
   private text = '';
   constructor(name: string) {
     this.nodeName = name;
@@ -40,14 +43,6 @@ class El {
   get textContent(): string {
     return this.text;
   }
-  // Icon <svg>s set their body via innerHTML; capture it so tests can tell one
-  // resolved glyph from another (the real DOM parses it into child nodes).
-  set innerHTML(v: string) {
-    this.html = v;
-  }
-  get innerHTML(): string {
-    return this.html;
-  }
   getComputedTextLength(): number {
     return this.text.length * 8;
   }
@@ -67,17 +62,42 @@ afterAll(() => {
   (globalThis as { document?: unknown }).document = origDocument;
 });
 
-// All edge elements anywhere in the built SVG (edges are appended flat, drawn as
-// <path> now). Filter by the `bpmn-edge` class so arrowhead <path>s (which live in
-// markers and carry `bpmn-arrow`) are excluded.
+// All edge <path> elements anywhere in the built SVG (edges are appended flat, each
+// carrying the bpmn-edge class; other paths — arrowheads, glyphs — do not).
 function edges(): El[] {
-  return svg.children.filter((e) => e.nodeName === 'path' && e.attrs.class?.includes('bpmn-edge'));
+  return svg.children.filter(
+    (e) => e.nodeName === 'path' && !!e.attrs.class?.includes('bpmn-edge'),
+  );
 }
 // Count of edges carrying an arrowhead (a real line's single head).
 function heads(): number {
   return edges().filter((p) => p.attrs['marker-start'] || p.attrs['marker-end']).length;
 }
-// Finds a <marker> anywhere in the tree by its url(#id) reference.
+// Every element in the built SVG, recursively (for overlays nested under node groups).
+function collectEls(): El[] {
+  const out: El[] = [];
+  const walk = (e: El): void => {
+    out.push(e);
+    e.children.forEach(walk);
+  };
+  svg.children.forEach(walk);
+  return out;
+}
+// Every <rect> in the tree — used to count the debug overlay's port marks.
+function allRects(): El[] {
+  return collectEls().filter((e) => e.nodeName === 'rect');
+}
+// The debug overlay's ROUTER ports (red squares). A declared port carries the extra
+// `bpmn-port-declared` class, so an exact class match picks out the router's own.
+function routerPorts(): number {
+  return allRects().filter((r) => r.attrs.class === 'bpmn-port').length;
+}
+// Hand-drawn bridges, which the debug overlay tints blue.
+function blueBridges(): number {
+  return edges().filter((p) => (p.attrs.style ?? '').includes('2962ff')).length;
+}
+// Finds a <marker> anywhere in the tree by an edge's url(#id) reference, so a test
+// can tell WHICH marker an end carries (a hollow head, an origin circle, …).
 function markerByRef(ref: string | undefined): El | undefined {
   const id = ref?.match(/#(.+)\)/)?.[1];
   if (!id) return undefined;
@@ -98,621 +118,6 @@ async function render(code: string): Promise<void> {
 }
 
 describe('routing (real ELK)', () => {
-  const findRect = (cls: string) =>
-    svg.children.filter((e) => e.nodeName === 'rect' && e.attrs.class?.includes(cls));
-
-  it('renders an empty horizontal pool as a sharp-cornered fixed-size box', async () => {
-    await render('bpmn LR\n  pool "Orders"');
-    const [pool] = findRect('bpmn-pool');
-    expect(pool).toBeDefined();
-    // Carries the common entity outline, and is not a container (a leaf, no lanes).
-    expect(pool.attrs.class).toContain('bpmn-entity');
-    expect(pool.attrs.class).not.toContain('bpmn-container');
-    // Sharp corners: no rounding (only activities round).
-    expect(pool.attrs.rx).toBeUndefined();
-    // Horizontal: eight activity widths by two activity heights (80×44 → 640×88).
-    expect(Number(pool.attrs.width)).toBe(640);
-    expect(Number(pool.attrs.height)).toBe(88);
-  });
-
-  it('swaps the empty pool dimensions for a vertical flow', async () => {
-    await render('bpmn TB\n  pool "Orders"');
-    const [pool] = findRect('bpmn-pool');
-    expect(Number(pool.attrs.width)).toBe(88);
-    expect(Number(pool.attrs.height)).toBe(640);
-  });
-
-  it('gives each line landing on a pool its own port, on the side facing the source', async () => {
-    // Two lines land directly on the black-box pool P; with `debug ports` the
-    // router's ports draw as small squares. Each line mints its own port on P.
-    // The root toggles to a vertical layout (it holds a pool), so P sits on top and
-    // the tasks below it: both ports should land on P's SOUTH edge (facing the
-    // tasks), at distinct points along it rather than stacked.
-    await render(
-      ['bpmn LR', '  debug ports', '  pool P', '  task A', '  task B', '  A --> P', '  B --> P'].join('\n'),
-    );
-    const [pool] = findRect('bpmn-pool');
-    const poolBottom = Number(pool.attrs.y) + Number(pool.attrs.height);
-    const ports = svg.children.filter(
-      (e) => e.nodeName === 'rect' && e.attrs.class?.includes('bpmn-port'),
-    );
-    expect(ports.length).toBe(2);
-    // Port marker rects are drawn centred on the port point (offset by PORT_MARK/2=3).
-    const centres = ports.map((p) => ({ x: Number(p.attrs.x) + 3, y: Number(p.attrs.y) + 3 }));
-    // Both sit on the pool's bottom edge…
-    expect(centres.every((c) => Math.abs(c.y - poolBottom) < 2)).toBe(true);
-    // …at distinct x's (ELK spread them along the side).
-    expect(new Set(centres.map((c) => c.x)).size).toBe(2);
-  });
-
-  it('renders a pool with lanes: a pool box plus a stretched lane box per lane', async () => {
-    await render(
-      ['bpmn LR', '  pool P', '    lane A', '    lane B'].join('\n'),
-    );
-    const [pool] = findRect('bpmn-pool');
-    const lanes = findRect('bpmn-lane');
-    expect(pool).toBeDefined();
-    expect(pool.attrs.class).toContain('bpmn-container'); // has lanes now
-    expect(lanes.length).toBe(2);
-    // Lanes stretch to a common width (span the pool's content) and stack (differ in y).
-    expect(lanes[0].attrs.width).toBe(lanes[1].attrs.width);
-    expect(lanes[0].attrs.y).not.toBe(lanes[1].attrs.y);
-    // Pool width = its label band (30) + the lane content width.
-    expect(Number(pool.attrs.width)).toBe(30 + Number(lanes[0].attrs.width));
-    // Both lanes sit to the right of the pool's left band.
-    expect(Number(lanes[0].attrs.x)).toBe(Number(pool.attrs.x) + 30);
-  });
-
-  it("a lane fills its pool's cross-axis even when a crossing edge grows the pool", async () => {
-    // Regression: a boundary-crossing line makes ELK grow the pool a few pixels
-    // past its lone lane; the lane must still tile the pool's full cross extent
-    // (its height for an LR pool), leaving no gap along the top or bottom.
-    await render(
-      [
-        'bpmn TB',
-        '  pool A LR',
-        '    lane Bobs Lane',
-        '      manual task Bob',
-        '        --> Alice',
-        '  pool B LR',
-        '    lane Alices Lane',
-        '      user task Alice',
-      ].join('\n'),
-    );
-    const pools = findRect('bpmn-pool');
-    const lanes = findRect('bpmn-lane');
-    expect(pools.length).toBe(2);
-    expect(lanes.length).toBe(2);
-    pools.forEach((pool, i) => {
-      const lane = lanes[i];
-      // The lane spans the pool's full height and shares its top and bottom edge.
-      expect(Number(lane.attrs.y)).toBe(Number(pool.attrs.y));
-      expect(Number(lane.attrs.height)).toBe(Number(pool.attrs.height));
-    });
-  });
-
-  it('stacks root pools ACROSS the diagram flow (LR diagram → pools top-to-bottom)', async () => {
-    // A root holding pools toggles its layout axis (LR → TB), so the two pools stack
-    // vertically — the classic swimlane arrangement — sharing x and differing in y.
-    await render(['bpmn LR', '  pool A', '    lane LA', '  pool B', '    lane LB'].join('\n'));
-    const pools = findRect('bpmn-pool');
-    expect(pools.length).toBe(2);
-    expect(Number(pools[0].attrs.x)).toBe(Number(pools[1].attrs.x));
-    expect(Number(pools[0].attrs.y)).not.toBe(Number(pools[1].attrs.y));
-  });
-
-  it('toggles the root layout axis for a vertical diagram (TB → pools side by side)', async () => {
-    // TB toggles to an LR root layout: the pools sit side by side (share y, differ in x).
-    await render(['bpmn TB', '  pool A', '    lane LA', '  pool B', '    lane LB'].join('\n'));
-    const pools = findRect('bpmn-pool');
-    expect(pools.length).toBe(2);
-    expect(Number(pools[0].attrs.y)).toBe(Number(pools[1].attrs.y));
-    expect(Number(pools[0].attrs.x)).not.toBe(Number(pools[1].attrs.x));
-  });
-
-  it('keeps stacked pools aligned even when message flows run between them', async () => {
-    // Regression: cross-pool edges tempt ELK's default (Brandes-Köpf) node placement
-    // to slide a pool sideways to shorten them, breaking the swimlane stack. The
-    // pools must still share a cross-axis origin (same x for a vertical stack).
-    await render(
-      [
-        'bpmn',
-        '  pool P1',
-        '  pool',
-        '    lane',
-        '      task',
-        '        --> P1',
-        '      task',
-        '        --> P1',
-      ].join('\n'),
-    );
-    const pools = findRect('bpmn-pool');
-    expect(pools.length).toBe(2);
-    expect(Number(pools[0].attrs.x)).toBe(Number(pools[1].attrs.x));
-    expect(Number(pools[0].attrs.y)).not.toBe(Number(pools[1].attrs.y));
-  });
-
-  it('extends same-direction pools to a common length (LR → equal widths, aligned)', async () => {
-    // Two LR pools of different content lengths. ELK sizes each to its own content
-    // (and centres the shorter one), leaving the stack ragged; they must be pulled
-    // to the longest pool's width and left-aligned, the way lanes share one length.
-    await render(
-      [
-        'bpmn LR',
-        '  pool Long',
-        '    lane L1',
-        '      task A',
-        '      task B',
-        '      task C',
-        '      A --> B',
-        '      B --> C',
-        '  pool Short',
-        '    lane L2',
-        '      task E',
-      ].join('\n'),
-    );
-    const pools = findRect('bpmn-pool');
-    expect(pools.length).toBe(2);
-    // Equal width (the longest) and a shared left edge — right edges line up.
-    expect(Number(pools[0].attrs.width)).toBe(Number(pools[1].attrs.width));
-    expect(Number(pools[0].attrs.x)).toBe(Number(pools[1].attrs.x));
-    // The stretch is real: the short pool grew past its lone task's width.
-    expect(Number(pools[1].attrs.width)).toBeGreaterThan(150);
-  });
-
-  it('extends only pools that share a direction (a lone TB pool keeps its own length)', async () => {
-    // Two LR pools and one TB pool. The LR pair equalises to a common width; the
-    // TB pool is the only one of its direction, so its height is left untouched.
-    await render(
-      [
-        'bpmn LR',
-        '  pool H1 LR',
-        '    lane a',
-        '      task A',
-        '      task B',
-        '      A --> B',
-        '  pool H2 LR',
-        '    lane b',
-        '      task C',
-        '  pool V1 TB',
-        '    lane c',
-        '      task D',
-        '      task E',
-        '      D --> E',
-      ].join('\n'),
-    );
-    const pools = findRect('bpmn-pool');
-    expect(pools.length).toBe(3);
-    const [h1, h2, v1] = pools;
-    // The two LR pools match widths…
-    expect(Number(h1.attrs.width)).toBe(Number(h2.attrs.width));
-    // …while the lone TB pool keeps a height driven by its own two stacked tasks,
-    // taller than the single-row LR pools (i.e. it was not forced to their length).
-    expect(Number(v1.attrs.height)).toBeGreaterThan(Number(h1.attrs.height));
-  });
-
-  it('reverses a reversed pool\'s lane order (RL flow → BT lane stack, sign preserved)', async () => {
-    // The pool→lane toggle preserves the sign: an RL pool stacks its lanes along BT,
-    // so they still stack vertically but the first-declared lane sits at the BOTTOM
-    // (the old sign-losing map put it on top).
-    await render(['bpmn', '  pool P RL', '    lane LA', '    lane LB'].join('\n'));
-    const lanes = findRect('bpmn-lane');
-    expect(lanes.length).toBe(2);
-    expect(Number(lanes[0].attrs.x)).toBe(Number(lanes[1].attrs.x)); // vertical stack
-    expect(Number(lanes[0].attrs.y)).toBeGreaterThan(Number(lanes[1].attrs.y)); // LA below LB
-  });
-
-  it('draws a cross-pool line as a message flow: dashed, origin circle, hollow head', async () => {
-    await render(
-      [
-        'bpmn TB',
-        '  pool A LR',
-        '    lane Bobs Lane',
-        '      manual task Bob',
-        '        --> Alice',
-        '  pool B LR',
-        '    lane Alices Lane',
-        '      user task Alice',
-      ].join('\n'),
-    );
-    const es = edges();
-    expect(es.length).toBe(1);
-    const edge = es[0];
-    // Dashed message-flow class.
-    expect(edge.attrs.class).toContain('bpmn-message-flow');
-    // The origin circle sits at the source end, the arrowhead at the target end.
-    const circle = markerByRef(edge.attrs['marker-start']);
-    const head = markerByRef(edge.attrs['marker-end']);
-    expect(circle?.children[0]?.nodeName).toBe('circle');
-    expect(head?.children[0]?.nodeName).toBe('path');
-    // Both are hollow: filled with the background (#fff), outlined in the line color.
-    expect(circle?.children[0]?.attrs.style).toContain('fill:#fff');
-    expect(circle?.children[0]?.attrs.style).toContain('stroke:#333');
-    expect(head?.children[0]?.attrs.style).toContain('fill:#fff');
-    expect(head?.children[0]?.attrs.style).toContain('stroke:#333');
-  });
-
-  it('keeps a same-pool line a plain solid sequence flow', async () => {
-    await render(
-      [
-        'bpmn LR',
-        '  pool A LR',
-        '    lane L',
-        '      task X',
-        '      task Y',
-        '      X --> Y',
-      ].join('\n'),
-    );
-    const es = edges();
-    expect(es.length).toBe(1);
-    expect(es[0].attrs.class).toBe('bpmn-edge'); // not a message flow
-    expect(es[0].attrs['marker-start']).toBeUndefined(); // no origin circle
-  });
-
-  it('draws a data association dotted with an open "V" head, not a message flow', async () => {
-    await render(
-      [
-        'bpmn LR',
-        '  task Bob',
-        '    --> DS',
-        '  data store DS',
-      ].join('\n'),
-    );
-    const es = edges();
-    expect(es.length).toBe(1);
-    const edge = es[0];
-    // Dotted data-association class, no origin circle.
-    expect(edge.attrs.class).toContain('bpmn-data-assoc');
-    expect(edge.attrs.class).not.toContain('bpmn-message-flow');
-    expect(edge.attrs['marker-start']).toBeUndefined();
-    // The head is an open "V": a stroked, unfilled polyline.
-    const head = markerByRef(edge.attrs['marker-end']);
-    expect(head?.children[0]?.nodeName).toBe('path');
-    expect(head?.children[0]?.attrs.style).toContain('fill:none');
-    expect(head?.children[0]?.attrs.style).toContain('stroke:#333');
-  });
-
-  it('keeps a data association dotted even when it crosses pools', async () => {
-    // A data line takes the data-association look regardless of pool crossing (it is
-    // never promoted to a message flow).
-    await render(
-      [
-        'bpmn TB',
-        '  pool A LR',
-        '    lane L',
-        '      task Bob',
-        '        --> DS',
-        '  pool B LR',
-        '    lane M',
-        '      data store DS',
-      ].join('\n'),
-    );
-    const es = edges();
-    expect(es.length).toBe(1);
-    expect(es[0].attrs.class).toContain('bpmn-data-assoc');
-    expect(es[0].attrs.class).not.toContain('bpmn-message-flow');
-  });
-
-  it('draws a data collection as a data object plus three parallel marker bars', async () => {
-    await render('bpmn LR\n  data collection Items');
-    // The data-object silhouette (folded-corner polygon) is still drawn.
-    const polys = svg.children.filter(
-      (e) => e.nodeName === 'polygon' && e.attrs.class?.includes('bpmn-data'),
-    );
-    expect(polys.length).toBe(1);
-    // The collection marker: exactly three vertical bars (<line>s), evenly spaced.
-    const bars = svg.children.filter(
-      (e) => e.nodeName === 'line' && e.attrs.class?.includes('bpmn-data'),
-    );
-    expect(bars.length).toBe(3);
-    // All three are vertical (x1 === x2) and share their top/bottom (a level row).
-    expect(bars.every((b) => b.attrs.x1 === b.attrs.x2)).toBe(true);
-    expect(new Set(bars.map((b) => b.attrs.y1)).size).toBe(1);
-    // Their x's are distinct and evenly spaced around the centre.
-    const xs = bars.map((b) => Number(b.attrs.x1)).sort((a, b) => a - b);
-    expect(xs[1] - xs[0]).toBeCloseTo(xs[2] - xs[1]);
-  });
-
-  it('draws a plain data object without collection marker bars', async () => {
-    await render('bpmn LR\n  data object d');
-    const bars = svg.children.filter(
-      (e) => e.nodeName === 'line' && e.attrs.class?.includes('bpmn-data'),
-    );
-    expect(bars.length).toBe(0);
-  });
-
-  it('draws the subprocess (composite) marker after the loop marker', async () => {
-    // A collapsed loop subprocess carries both a loop marker and the composite `+`.
-    // The composite must come LAST — to the right of the loop marker.
-    await render('bpmn LR\n  loop subprocess "Looped"');
-    const markers = svg.children
-      .filter((e) => e.nodeName === 'svg' && e.attrs.class?.includes('bpmn-icon'))
-      .map((e) => ({
-        // The loop glyph is mirrored (scale(-1 1)); the composite is a boxed plus.
-        kind: e.html.includes('scale(-1 1)')
-          ? 'loop'
-          : e.html.includes('rect') && e.html.includes('M12 7v10')
-            ? 'composite'
-            : 'other',
-        x: Number(e.attrs.x),
-      }));
-    const loop = markers.find((m) => m.kind === 'loop');
-    const composite = markers.find((m) => m.kind === 'composite');
-    expect(loop).toBeDefined();
-    expect(composite).toBeDefined();
-    expect(composite!.x).toBeGreaterThan(loop!.x);
-  });
-
-  it('grows a data object and store wide enough to fit a long caption', async () => {
-    // Object width = right-x − left-x of its folded-corner polygon (points are
-    // "L,T R-f,T R,T+f R,B L,B"): compare corner 2 (R) with corner 0 (L).
-    const objectWidth = (): number => {
-      const poly = svg.children.find(
-        (e) => e.nodeName === 'polygon' && e.attrs.class?.includes('bpmn-data'),
-      );
-      const pts = poly!.attrs.points.split(' ').map((p) => Number(p.split(',')[0]));
-      return pts[2] - pts[0];
-    };
-    // Store width = R − L pulled from its cylinder path ("M L,.. A rx,ry 0 0 1 R,..").
-    const storeWidth = (): number => {
-      const path = svg.children.find(
-        (e) => e.nodeName === 'path' && e.attrs.class?.includes('bpmn-data'),
-      );
-      const m = path!.attrs.d.match(/M\s+([\d.]+),[\d.]+\s+A\s+[\d.]+,[\d.]+\s+0\s+0\s+1\s+([\d.]+),/);
-      return Number(m![2]) - Number(m![1]);
-    };
-
-    await render('bpmn LR\n  data object "x"');
-    const narrowObj = objectWidth();
-    expect(narrowObj).toBe(72); // the default DATA_W for a short caption
-    await render('bpmn LR\n  data object "A very long data object caption"');
-    expect(objectWidth()).toBeGreaterThan(narrowObj);
-
-    await render('bpmn LR\n  data store "x"');
-    const narrowStore = storeWidth();
-    expect(narrowStore).toBeCloseTo(72);
-    await render('bpmn LR\n  data store "A very long data store caption"');
-    expect(storeWidth()).toBeGreaterThan(narrowStore);
-  });
-
-  it('draws a line touching a text annotation dotted, like a data association', async () => {
-    await render(
-      [
-        'bpmn LR',
-        '  task Bob',
-        '  comment note "see spec"',
-        '  Bob --- note',
-      ].join('\n'),
-    );
-    const es = edges();
-    expect(es.length).toBe(1);
-    expect(es[0].attrs.class).toContain('bpmn-data-assoc');
-    expect(es[0].attrs.class).not.toContain('bpmn-message-flow');
-  });
-
-  it('keeps the dotted look when the line goes through a declared port on the text', async () => {
-    await render(
-      [
-        'bpmn LR',
-        '  task Bob',
-        '  comment note w',
-        '    port p e',
-        '  Bob --- p',
-      ].join('\n'),
-    );
-    const es = edges();
-    expect(es.length).toBe(1);
-    // The endpoint is the port, but its owner is the text annotation, so it is still
-    // classified as a data association.
-    expect(es[0].attrs.class).toContain('bpmn-data-assoc');
-    expect(es[0].attrs.class).not.toContain('bpmn-message-flow');
-  });
-
-  it('renders a gateway as a diamond (polygon) with a centred type marker', async () => {
-    await render('bpmn\n  inclusive gate g');
-    const diamond = svg.children.find(
-      (e) => e.nodeName === 'polygon' && e.attrs.class?.includes('bpmn-gate'),
-    );
-    expect(diamond).toBeDefined();
-    expect(diamond!.attrs.class).toContain('bpmn-entity');
-    // Four points (a diamond) through the box midpoints.
-    expect(diamond!.attrs.points.trim().split(/\s+/).length).toBe(4);
-    // The type marker is drawn as a nested icon <svg>.
-    const icon = svg.children.find((e) => e.nodeName === 'svg' && e.attrs.class === 'bpmn-icon');
-    expect(icon).toBeDefined();
-  });
-
-  const eventCircles = () =>
-    svg.children.filter((e) => e.nodeName === 'circle' && e.attrs.class?.includes('bpmn-event'));
-
-  it('draws a start event as a single thin circle (no marker)', async () => {
-    await render('bpmn\n  start');
-    const circles = eventCircles();
-    expect(circles.length).toBe(1);
-    expect(circles[0].attrs.style).not.toContain('dasharray');
-    expect(circles[0].attrs.style).not.toContain('stroke-width');
-    // Blank event → no marker icon.
-    expect(svg.children.some((e) => e.nodeName === 'svg' && e.attrs.class === 'bpmn-icon')).toBe(false);
-  });
-
-  it('draws an intermediate (catch) event as a double circle', async () => {
-    await render('bpmn\n  catch mid');
-    expect(eventCircles().length).toBe(2);
-  });
-
-  it('draws an end event as a single thick circle', async () => {
-    await render('bpmn\n  end e');
-    const circles = eventCircles();
-    expect(circles.length).toBe(1);
-    expect(circles[0].attrs.style).toContain('stroke-width:4.5');
-  });
-
-  it('draws a non-interrupting event with a dashed circle', async () => {
-    await render('bpmn\n  non-interrupt ni');
-    expect(eventCircles()[0].attrs.style).toContain('stroke-dasharray');
-  });
-
-  it('draws a boundary non-interrupt event as a double dashed circle', async () => {
-    await render('bpmn\n  boundary continue b');
-    const circles = eventCircles();
-    expect(circles.length).toBe(2);
-    expect(circles.every((c) => c.attrs.style.includes('stroke-dasharray'))).toBe(true);
-  });
-
-  it('draws the type marker inside a typed event', async () => {
-    await render('bpmn\n  message start m');
-    expect(svg.children.some((e) => e.nodeName === 'svg' && e.attrs.class === 'bpmn-icon')).toBe(true);
-  });
-
-  // A drawn caption is a <text> that is not the offscreen measurement probe (x=-9999).
-  const hasCaption = (t: string): boolean =>
-    svg.children.some((e) => e.nodeName === 'text' && e.textContent === t && e.attrs.x !== '-9999');
-
-  it('draws a gateway caption outside only when explicitly set', async () => {
-    await render('bpmn\n  gate g');
-    expect(hasCaption('g')).toBe(false); // no explicit label → no caption
-    await render('bpmn\n  gate g "Choose"');
-    expect(hasCaption('Choose')).toBe(true);
-  });
-
-  it('draws an event caption outside, defaulting to the event id', async () => {
-    await render('bpmn\n  message start received');
-    expect(hasCaption('received')).toBe(true);
-  });
-
-  describe('text annotation (comment)', () => {
-    // The bracket is a polyline carrying bpmn-text; a background rect (only with a
-    // fill) carries bpmn-text too but is a <rect>.
-    const brackets = () =>
-      svg.children.filter(
-        (e) => e.nodeName === 'polyline' && e.attrs.class?.includes('bpmn-text'),
-      );
-    // A polyline's four points, as [x,y] pairs.
-    const pts = (p: El) =>
-      p.attrs.points.trim().split(/\s+/).map((pt) => pt.split(',').map(Number));
-
-    it('draws a transparent box (no fill rect) with a bold open bracket', async () => {
-      await render('bpmn\n  comment note "A note"');
-      const bs = brackets();
-      expect(bs.length).toBe(1);
-      expect(bs[0].attrs.style).toContain('fill:none');
-      expect(bs[0].attrs.style).toContain(`stroke-width:2`);
-      // No background rect drawn without a fill.
-      expect(svg.children.some((e) => e.nodeName === 'rect' && e.attrs.class?.includes('bpmn-text'))).toBe(
-        false,
-      );
-      // The caption is drawn (inside its centred <g>, so search the whole tree).
-      let found = false;
-      const walk = (e: El): void => {
-        if (e.nodeName === 'text' && e.textContent === 'A note') found = true;
-        e.children.forEach(walk);
-      };
-      walk(svg);
-      expect(found).toBe(true);
-    });
-
-    it('paints a background rect only when a fill is set', async () => {
-      await render('bpmn\n  comment note "n"\n    style fill:#eef');
-      const bg = svg.children.find((e) => e.nodeName === 'rect' && e.attrs.class?.includes('bpmn-text'));
-      expect(bg).toBeDefined();
-      expect(bg!.attrs.style).toContain('fill:#eef');
-    });
-
-    it('puts the bracket on the explicit side (east → a "]")', async () => {
-      await render('bpmn\n  comment note e "n"');
-      const [b] = brackets();
-      const p = pts(b);
-      // A "]" starts and ends at the right edge (max x), turning in by the cap.
-      const maxX = Math.max(...p.map(([x]) => x));
-      expect(p[1][0]).toBe(maxX); // corner on the right edge
-      expect(p[2][0]).toBe(maxX);
-      expect(p[0][0]).toBeLessThan(maxX); // caps turn inward (left)
-    });
-
-    it('auto-picks the first port side for the bracket', async () => {
-      await render('bpmn\n  comment note\n    port p n');
-      const [b] = brackets();
-      const p = pts(b);
-      // A north bracket ("⊓"): both corners on the top edge (min y).
-      const minY = Math.min(...p.map(([, y]) => y));
-      expect(p[1][1]).toBe(minY);
-      expect(p[2][1]).toBe(minY);
-    });
-  });
-
-  describe('multi-line labels', () => {
-    // Text lives inside a <g> for a leaf box, so walk the whole tree.
-    const allText = (): El[] => {
-      const out: El[] = [];
-      const walk = (e: El): void => {
-        if (e.nodeName === 'text') out.push(e);
-        e.children.forEach(walk);
-      };
-      walk(svg);
-      return out;
-    };
-    const tspans = (t: El): El[] => t.children.filter((c) => c.nodeName === 'tspan');
-
-    // The DSL needs a literal backslash-n in the label; `\\n` in this JS string is
-    // exactly that, which the parser turns into a caption newline.
-    it('grows a leaf box by one line height per extra caption line', async () => {
-      await render('bpmn\n  task a "First line\\nSecond line"');
-      const [box] = findRect('bpmn-activity');
-      // ACTIVITY_MIN_H (66) + one extra line (LABEL_LINE_H 16).
-      expect(Number(box.attrs.height)).toBe(82);
-    });
-
-    it('draws a multi-line caption as one centred tspan per line', async () => {
-      await render('bpmn\n  task a "First line\\nSecond line"');
-      const label = allText().find((t) => tspans(t).length > 0);
-      expect(label).toBeDefined();
-      const rows = tspans(label as El);
-      expect(rows.map((r) => r.textContent)).toEqual(['First line', 'Second line']);
-      // First row lifted half a line above centre, the next stepped down a full line.
-      expect(rows[0].attrs.dy).toBe('-8');
-      expect(rows[1].attrs.dy).toBe('16');
-    });
-
-    it('leaves a single-line caption as plain text (no tspans)', async () => {
-      await render('bpmn\n  task a "One line"');
-      const label = allText().find((t) => t.textContent === 'One line');
-      expect(label).toBeDefined();
-      expect(tspans(label as El).length).toBe(0);
-    });
-
-    it('collects a | multi-line label and grows the container band to fit it', async () => {
-      await render(
-        ['bpmn', '  subprocess Bob |', '      One', '      Two', '      Three', '    task Kid'].join('\n'),
-      );
-      const label = allText().find((t) => tspans(t).length === 3);
-      expect(label).toBeDefined();
-      expect(tspans(label as El).map((r) => r.textContent)).toEqual(['One', 'Two', 'Three']);
-    });
-  });
-
-  it('draws a group as a round-cornered dashed box captioned with its name', async () => {
-    await render(['bpmn LR', '  group Wrap', '    task A', '    task B'].join('\n'));
-    const [group] = findRect('bpmn-group');
-    expect(group).toBeDefined();
-    // Carries the common outline, is a container (has children), and rounds its corners.
-    expect(group.attrs.class).toContain('bpmn-entity');
-    expect(group.attrs.class).toContain('bpmn-container');
-    expect(Number(group.attrs.rx)).toBeGreaterThan(0);
-    // Transparent interior so it never obscures the wrapped entities.
-    expect(group.attrs.style).toContain('fill:transparent');
-    // Its dash-dot border comes from the CSS class (not an inline dasharray).
-    expect(group.attrs.style ?? '').not.toContain('stroke-dasharray');
-    // The name is drawn as the caption (default). It sits in a <g> label band, so
-    // walk the whole tree for it rather than scanning svg's direct children.
-    const texts: El[] = [];
-    const walk = (e: El): void => {
-      if (e.nodeName === 'text') texts.push(e);
-      e.children.forEach(walk);
-    };
-    walk(svg);
-    expect(texts.some((t) => t.textContent === 'Wrap' && t.attrs.x !== '-9999')).toBe(true);
-  });
-
   it('routes a mixed-direction cross line via auto-depth port chains, one head at the target', async () => {
     await render(
       [
@@ -727,12 +132,18 @@ describe('routing (real ELK)', () => {
         '    route depth:1',
       ].join('\n'),
     );
-    // Source and target chains + the ELK join = 3 polylines; exactly one head.
-    expect(edges().length).toBe(3);
+    // `Left` (lr) differs from the root (tb) → SEPARATE, so A chains out via one routed
+    // port. `Right` (tb) shares the root flow → INCLUDE/flat, so C needs no port. The
+    // source chain + the ELK join = 2 polylines; exactly one head at the target.
+    expect(edges().length).toBe(2);
     expect(heads()).toBe(1);
   });
 
-  it('composes a flattened container with a port chain climbing out of it (rule 3)', async () => {
+  it('composes a flattened container with a port chain climbing out of it', async () => {
+    // A -> S2 routes via flattening Big; B -> T's chain places a port on Bottom,
+    // *inside* the flattened Big, and still routes. The pre-rewrite clamp existed
+    // only because we (wrongly) thought this could not work — so this is the test
+    // that must keep it working.
     await render(
       [
         'bpmn lr',
@@ -750,10 +161,10 @@ describe('routing (real ELK)', () => {
         '    route depth:1',
       ].join('\n'),
     );
-    // Two real lines (A->S2 flattened, B->T ported+bridged): two heads total.
+    // Two real lines both route (one head each): A->S2 flattens Big; B->T chains out of
+    // the flattened Big and reaches T. Directions are preserved throughout.
     expect(heads()).toBe(2);
-    // B->T is a chain (B->port) + bridge + (T->port); A->S2 = 1.
-    expect(edges().length).toBeGreaterThanOrEqual(4);
+    expect(edges().length).toBeGreaterThanOrEqual(3);
   });
 
   it('routes a two-level port chain out of nested containers without throwing', async () => {
@@ -770,9 +181,168 @@ describe('routing (real ELK)', () => {
         '    route exit:s depth:2',
       ].join('\n'),
     );
-    // A->port(Inner) + port(Inner)->port(Outer) + join(->C) = 3 polylines, one head.
+    // A sits two SEPARATE levels deep (Inner in Outer). Because the line exits Outer
+    // through its container-child Inner, Outer's interior is WRAPPED. Inner is itself a
+    // black-box, so A gets ONE port on Inner (its ELK edge A->Inner). Crossing the wrapper
+    // for Outer reuses that same Inner port rather than stacking a second one on it — a
+    // hand-drawn bridge Inner->Outer, then a port on Outer that ELK-joins C. So: the ELK
+    // A->Inner segment, the bridge, and the ELK join = 3 polylines, one head. Routes
+    // without throwing, and Inner carries exactly one port (no degenerate attach segment).
     expect(edges().length).toBe(3);
     expect(heads()).toBe(1);
+  });
+
+  it('does not double-port a wrapped black-box whose interior child is itself a black-box', async () => {
+    // Root is LR, so `a` (tb) and `b` (lr) both differ from their parent AND branch →
+    // both are black-boxes. `c---s` exits `a` through its container-child `b`, so `a`'s
+    // interior is WRAPPED. `b` sits inside that wrapper but is itself a black-box, so the
+    // line already ports `b` on its way out; crossing the wrapper for `a` must REUSE that
+    // `b` port, not stack a second one on the same edge (the old bug: two ports on `b`
+    // plus a zero-length attach segment). Expect exactly two router ports — one on `b`,
+    // one on `a` — and no degenerate (zero-length) edge segment. `route depth:auto` is
+    // explicit because auto-ports are opt-in (the default depth:0 is a pure bridge).
+    // The bare `task`s are filler boxes: they make each container BRANCH, which is what
+    // makes its differing direction visible and so a real boundary.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:auto',
+        '  task s',
+        '  subprocess a',
+        '    task',
+        '    direction tb',
+        '    subprocess b',
+        '      direction lr',
+        '      task',
+        '      task c',
+        '        --- s',
+      ].join('\n'),
+    );
+    expect(routerPorts()).toBe(2);
+    // No edge segment collapses to a point (a duplicated boundary port would emit one).
+    const hasDegenerate = edges().some((p) => {
+      const nums = (p.attrs.d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+      for (let i = 0; i + 3 < nums.length; i += 2) {
+        if (nums[i] === nums[i + 2] && nums[i + 1] === nums[i + 3]) return true;
+      }
+      return false;
+    });
+    expect(hasDegenerate).toBe(false);
+  });
+
+  it('bridges a declared port deep inside a wrapped black-box to a port on its own shell', async () => {
+    // `W` (tb) differs from the root (lr) and branches → a black-box. `nb` (lr) inside it
+    // also differs and branches → a NESTED black-box. `dp --- shp` runs from a declared
+    // port on `nb` (deep inside `W`) to a declared port on `W`'s OWN shell; because the
+    // line reaches into a container-child of `W`, `W`'s interior is WRAPPED. ELK cannot
+    // route from inside a wrapper out to the shell that wraps it, so an ELK join silently
+    // DROPS the line — the reported bug, where `dp --- shp` never appeared (0 edges). The
+    // exposed-at-LCA check must spot the wrapper on `dp`'s path and BRIDGE instead, so the
+    // line is drawn. Exactly one undirected line → one polyline, no head.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  region W tb',
+        '    region nb lr',
+        '      task x',
+        '      task y',
+        '      port dp e',
+        '        --- shp',
+        '    port shp e',
+        '  task out',
+      ].join('\n'),
+    );
+    expect(edges().length).toBe(1); // was 0 before the fix (the line dropped)
+    expect(heads()).toBe(0);
+  });
+
+  it('auto-ports on the INCLUDE child when exiting a wrapped black-box to its shell port', async () => {
+    // `F` (tb) differs from the root (lr) and branches → a wrapped black-box. `a` is its
+    // INCLUDE child; `order` (lr) inside `a` is a nested black-box carrying a declared port
+    // `po`. `po --- p1` runs from `po` (deep inside the wrapper) to `p1` on `F`'s own shell
+    // (LCA is `F`). ELK cannot cross the wrapper, so the exit must ride an auto-port on the
+    // wrapper's outermost INCLUDE child `a`: an ELK edge `po -> a`-port, then a single
+    // bridge over the wrapper to `p1`. Before this cascade the line took ONE long direct
+    // bridge with NO port (which reads wrong — the port belongs on `a`'s edge). Assert
+    // exactly one router port (on `a`) and the two polylines.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:auto',
+        '  region F tb',
+        '    subprocess a',
+        '      task',
+        '      region r',
+        '        subprocess order lr',
+        '          task',
+        '          task of',
+        '          port po e',
+        '            --- p1',
+        '    port p1 e',
+      ].join('\n'),
+    );
+    expect(routerPorts()).toBe(1); // the auto-port on `a`; was 0 (a portless bridge) before
+    expect(edges().length).toBe(2); // po -> a (ELK) + a -> p1 (wrapper bridge)
+  });
+
+  it('ELK-joins to a declared port on an INCLUDE sibling — no needless bridge', async () => {
+    // `deep` sits in `SEP` (tb) — a black-box, so `deep---pi` chains out to an auto-port on
+    // `SEP`. Its other end `pi` is a declared port on `INC` (lr, same flow as the root → an
+    // INCLUDE sibling). The join `SEP-port -> pi` crosses NO wrapper — both are ports on
+    // direct children of the flat root — so ELK routes it. The exposed-at-LCA check must NOT
+    // reject `pi` merely because `INC` is INCLUDE (a declared port on an intermediate INCLUDE
+    // node is a real, reachable anchor); otherwise the join needlessly becomes a hand-drawn
+    // bridge. Assert the join is ELK: no blue (valid-bridge) edge under debug ports.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:auto',
+        '  region SEP tb',
+        '    task deep',
+        '      --- pi',
+        '    task s2',
+        '  region INC lr',
+        '    port pi w',
+        '    task i1',
+        '    task i2',
+      ].join('\n'),
+    );
+    expect(blueBridges()).toBe(0); // was 1 (the join bridged) before the fix
+    expect(edges().length).toBe(2); // deep -> SEP-port (chain) + SEP-port -> pi (ELK join)
+  });
+
+  it('flattens through to a declared port nested below the LCA without throwing', async () => {
+    // `alice` is a declared port on `region Inner`, itself inside `extra` — one level
+    // below the root LCA. In the flatten-by-default model every container on the path
+    // is INCLUDE (`Inner` is a single-box-child shell that collapses; `extra` and
+    // a-bob's region share the root's tb flow), so a-bob---alice FLATTENS to a plain
+    // ELK edge that reaches the boundary port directly — it grows NO routing ports.
+    // Regression that the nested declared port still routes (no throw, no dropped line).
+    await render(
+      [
+        'bpmn tb',
+        '  debug ports',
+        '  route depth:99',
+        '  region',
+        '    task a-bob',
+        '      --- alice',
+        '  region extra',
+        '    region Inner lr',
+        '      port alice w',
+        '        --- a-alice',
+        '      task a-alice',
+      ].join('\n'),
+    );
+    const ports = allRects().filter((r) => (r.attrs.class ?? '').startsWith('bpmn-port'));
+    const declared = ports.filter((r) => r.attrs.class?.includes('bpmn-port-declared')).length;
+    // One declared port (alice) and NO router ports: the whole path flattens, so the
+    // line ELK-routes to the boundary port without growing any port chain of its own.
+    expect(declared).toBe(1);
+    expect(routerPorts()).toBe(0);
   });
 
   it('hand-routes the whole line at depth:0 (single polyline, one head)', async () => {
@@ -793,25 +363,46 @@ describe('routing (real ELK)', () => {
     expect(heads()).toBe(1);
   });
 
-  it('renders an undirected mixed cross line with no head', async () => {
+  it('routes an undirected line through a bridging port as a valid (non-red) edge', async () => {
     await render(
       [
-        'bpmn tb',
-        '  region Left lr',
-        '    task A',
-        '    task B',
-        '  region Right tb',
-        '    task C',
-        '    task D',
-        '  A --- C',
-        '    route depth:1',
+        'bpmn lr',
+        '  task DB',
+        '  subprocess Box',
+        '    task Inner',
+        '    port In w',
+        '    Inner --- In',
+        '  DB --- In',
       ].join('\n'),
     );
-    expect(heads()).toBe(0);
-    expect(edges().length).toBe(3);
+    const ls = edges();
+    expect(ls.length).toBe(2);
+    expect(ls.every((p) => p.attrs.class === 'bpmn-edge')).toBe(true);
   });
 
-  it('routes a child to its container port and the port on to a sibling', async () => {
+  it('keeps a box whose only child is a port (it is a leaf, not an empty container)', async () => {
+    // Regression: a container activity whose only child is a `port` was built as a
+    // compound node with no child boxes, which ELK collapsed to zero size — the box
+    // vanished, leaving just its label. Both activities must render as normal leaf
+    // boxes, one of them carrying the port.
+    await render(
+      ['bpmn LR', '  subprocess Bob', '    port p w', '  task Alice', '  p --- Alice'].join('\n'),
+    );
+    const boxes = allRects().filter((e) => e.attrs.class?.includes('bpmn-activity'));
+    expect(boxes.length).toBe(2);
+    for (const b of boxes) {
+      expect(Number(b.attrs.width)).toBeGreaterThan(0);
+      expect(Number(b.attrs.height)).toBeGreaterThan(0);
+      // Being leaves now, neither is tagged as a container.
+      expect(b.attrs.class).not.toContain('bpmn-container');
+    }
+    // The port line still routes as one valid polyline.
+    const ls = edges();
+    expect(ls.length).toBe(1);
+    expect(ls[0].attrs.class).toBe('bpmn-edge');
+  });
+
+  it('wires a child to its container port and the port on to a sibling', async () => {
     await render(
       [
         'bpmn lr',
@@ -823,13 +414,15 @@ describe('routing (real ELK)', () => {
         '  Out --> DB',
       ].join('\n'),
     );
-    // Two edges; the head sits on DB (away from the port), never on Out.
+    // Two valid edges; the head sits on DB (away from the port), never on Out.
     expect(edges().length).toBe(2);
     expect(edges().every((p) => p.attrs.class === 'bpmn-edge')).toBe(true);
     expect(heads()).toBe(1);
   });
 
   it('routes a two-port pass-through between sibling containers', async () => {
+    // Worker — Out — In — Item: each port is a pass-through anchor, so all three
+    // undirected segments route and none is flagged (no head lands on a port).
     await render(
       [
         'bpmn lr',
@@ -838,9 +431,9 @@ describe('routing (real ELK)', () => {
         '    port Out e',
         '    Worker --- Out',
         '  subprocess Store',
-        '    task Data',
+        '    task Item',
         '    port In w',
-        '    Data --- In',
+        '    Item --- In',
         '  Out --- In',
       ].join('\n'),
     );
@@ -849,27 +442,8 @@ describe('routing (real ELK)', () => {
     expect(ls.every((p) => p.attrs.class === 'bpmn-edge')).toBe(true);
   });
 
-  it('keeps a box whose only child is a port (it is a leaf, not an empty container)', async () => {
-    // Regression: a container whose only child is a `port` was built as a compound
-    // node with no child boxes, which ELK collapsed to zero size. It must render as
-    // a normal leaf box carrying the port.
-    await render(
-      ['bpmn LR', '  subprocess Bob', '    port p w', '  task Alice', '  p -- Alice'].join('\n'),
-    );
-    const bob = svg.children.find(
-      (e) => e.nodeName === 'rect' && e.attrs.class?.includes('bpmn-activity'),
-    );
-    expect(bob).toBeDefined();
-    expect(Number(bob!.attrs.width)).toBeGreaterThan(0);
-    expect(Number(bob!.attrs.height)).toBeGreaterThan(0);
-    // Being a leaf now, it is not tagged as a container.
-    expect(bob!.attrs.class).not.toContain('bpmn-container');
-    const ls = edges();
-    expect(ls.length).toBe(1);
-    expect(ls[0].attrs.class).toBe('bpmn-edge');
-  });
-
   it('draws an arrowhead into a port as an invalid (red) edge', async () => {
+    // A port is a pass-through, not a destination, so a head landing on one is invalid.
     await render(
       ['bpmn lr', '  task DB', '  subprocess Box', '    port In w', '  DB --> In'].join('\n'),
     );
@@ -891,71 +465,624 @@ describe('routing (real ELK)', () => {
         '  DB --- In',
       ].join('\n'),
     );
-    const marks = svg.children.filter((e) => e.nodeName === 'rect' && e.attrs.class?.includes('bpmn-port'));
+    const marks = allRects().filter((e) => (e.attrs.class ?? '').startsWith('bpmn-port'));
     expect(marks.length).toBe(1);
     expect(marks[0].attrs.class).toContain('bpmn-port-declared');
     expect(marks[0].attrs.style).toContain('#00c853');
   });
 
-  it('draws hand-routed lines blue under the debug overlay', async () => {
-    // A cross-boundary line is hand-routed by the renderer, not ELK. Under
-    // `debug ports` every segment of it is forced blue so it stands out; a plain
-    // intra-region ELK edge (A --> B) keeps its theme color (no inline stroke).
-    await render(
-      [
-        'bpmn tb',
-        '  debug ports',
-        '  region Left lr',
-        '    task A',
-        '    task B',
-        '    A --> B',
-        '  region Right tb',
-        '    catch C',
-        '  A --> C',
-        '    route depth:0 bend:z',
-      ].join('\n'),
-    );
-    // The hand-routed A --> C draws blue; the ELK-routed A --> B carries no inline stroke.
-    expect(edges().some((e) => e.attrs.style?.includes('#2962ff'))).toBe(true);
-    expect(edges().some((e) => !e.attrs.style?.includes('#2962ff'))).toBe(true);
+  // A mixed-direction crossing (root is lr, L is tb, R is lr) with `route depth:0`
+  // routes A1-->B1 as a single hand-drawn bridge (depth:0 opts out of the port chain).
+  // Under the debug overlay that bridge is tinted blue so it reads apart from
+  // ELK-routed edges; without the overlay it keeps its default.
+  const mixedBridgeDiagram = (debug: boolean): string =>
+    [
+      'bpmn lr',
+      ...(debug ? ['  debug ports'] : []),
+      '  region L tb',
+      '    task A1',
+      '    task A2',
+      '  region R lr',
+      '    task B1',
+      '    task B2',
+      '  A1 --> B1',
+      '    route depth:0',
+    ].join('\n');
+
+  it('tints manual bridges blue under the debug overlay', async () => {
+    await render(mixedBridgeDiagram(true));
+    const ls = edges();
+    expect(ls.length).toBe(1);
+    expect(ls[0].attrs.style).toBe('stroke:#2962ff');
   });
 
-  it('leaves hand-routed lines their theme color when the debug overlay is off', async () => {
-    await render(
-      [
-        'bpmn tb',
-        '  region Left lr',
-        '    task A',
-        '    task B',
-        '    A --> B',
-        '  region Right tb',
-        '    catch C',
-        '  A --> C',
-        '    route depth:0 bend:z',
-      ].join('\n'),
-    );
-    expect(edges().some((e) => e.attrs.style?.includes('#2962ff'))).toBe(false);
+  it('leaves manual bridges their default color without the debug overlay', async () => {
+    await render(mixedBridgeDiagram(false));
+    const ls = edges();
+    expect(ls.length).toBe(1);
+    expect(ls[0].attrs.style ?? '').not.toContain('#2962ff');
   });
+
+  // The reported bug: `alice` sits inside a region, wired to a port on a *sibling*
+  // region. The line lives in the root LCA but alice is a level down, so a plain
+  // ELK edge could not dive across that boundary and the line was silently
+  // dropped. It now routes through the ordinary crossing machinery.
+  const nestedPortDiagram = [
+    'bpmn tb',
+    '  region',
+    '    task alice',
+    '      --- p-bob',
+    '  region lr',
+    '    port p-bob w',
+    '      --- bob',
+    '    task bob',
+    '    task bob2',
+  ].join('\n');
 
   it('routes a line to a declared port whose other end is nested in a sibling container', async () => {
-    // The reported bug: a node inside one region wired to a port on a *sibling*
-    // region. The line lives in the root LCA but the node is a level down, so a
-    // plain ELK edge could not dive across that boundary and the line was silently
-    // dropped. It must route through the ordinary crossing machinery.
+    await render(nestedPortDiagram);
+    // alice---p-bob FLATTENS to a single ELK edge: the root flattens and the lr region is
+    // black-boxed (it branches into bob/bob2), so its boundary port p-bob shows through and
+    // the edge reaches it directly — no chain, no bridge. The region's own p-bob---bob line
+    // is the second polyline. The alice line is no longer dropped.
+    expect(edges().length).toBe(2);
+    // Both route cleanly, so neither is red.
+    expect(edges().every((p) => p.attrs.class === 'bpmn-edge')).toBe(true);
+  });
+
+  it("preserves a sibling container's own direction when routing a nested port line", async () => {
+    // The crossing must NOT flatten the mixed root (which would unify directions).
+    // The right region flows LR, so `bob` stays to the RIGHT of the west port it
+    // connects to — a horizontal segment — rather than being stacked by a TB flow.
+    await render(nestedPortDiagram);
+    const horizontal = edges().some((p) => {
+      const pts = [...p.attrs.d.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)].map((m) => [
+        Number(m[1]),
+        Number(m[2]),
+      ]);
+      return pts.length >= 2 && pts.every((q) => q[1] === pts[0][1]);
+    });
+    expect(horizontal).toBe(true);
+  });
+
+  it('flattens the LCA parent for a deep line to a port ON the LCA, instead of throwing', async () => {
+    // Regression: `c` is nested two levels under `a`, and port `p` sits ON `a`
+    // (the LCA). A straight flatten of `a` asks ELK to route deep-node → a port on
+    // the flatten-root, which throws UnsupportedGraphException. planRoute raises the
+    // flatten to `a`'s parent `x`, so `a` is an intermediate node and the edge
+    // routes. Reaching these assertions at all proves the render no longer throws.
     await render(
       [
         'bpmn',
-        '  region',
-        '    task alice',
-        '      --- p-bob',
-        '  region lr',
-        '    port p-bob w',
-        '    task bob',
-        '    bob --- p-bob',
+        '  subprocess x',
+        '    subprocess a',
+        '      subprocess b',
+        '        task c',
+        '          --- p',
+        '      port p e',
       ].join('\n'),
     );
-    // The alice cross line is no longer dropped; both edges bridge cleanly (none red).
-    expect(edges().length).toBeGreaterThanOrEqual(2);
+    // The one line routed as a single (flattened) ELK edge — not dropped, not crashed.
+    expect(edges().length).toBe(1);
+  });
+
+  it('black-boxes an off-spine differing container so a flatten keeps its direction', async () => {
+    // c -> p (port on a) flattens a's parent x. x's subtree also holds d (tb), off
+    // the spine — flattening x would rotate d, so d is black-boxed (SEPARATE_CHILDREN)
+    // and keeps its tb while the rest flattens. One ELK edge, no throw, d still tb.
+    await render(
+      [
+        'bpmn',
+        '  subprocess x',
+        '    subprocess a',
+        '      subprocess b',
+        '        task c',
+        '          --- p',
+        '        subprocess d',
+        '          direction tb',
+        '          data dc',
+        '          data dp',
+        '      port p e',
+      ].join('\n'),
+    );
+    expect(edges().length).toBe(1);
+    // The two data objects are the only polygons carrying `bpmn-data` (their fold is a
+    // polyline, so it never collides with this).
+    const dataBoxes = collectEls().filter(
+      (e) => e.nodeName === 'polygon' && (e.attrs.class ?? '').includes('bpmn-data'),
+    );
+    expect(dataBoxes.length).toBe(2);
+    // A polygon's first point is its top-left corner, which is enough to compare the
+    // two boxes' placement.
+    const corner = (e: El): [number, number] => {
+      const [x, y] = e.attrs.points.trim().split(/\s+/)[0].split(',').map(Number);
+      return [x, y];
+    };
+    const [ax, ay] = corner(dataBoxes[0]);
+    const [bx, by] = corner(dataBoxes[1]);
+    // d is tb, so its two data objects stack VERTICALLY (a vertical gap larger than any
+    // horizontal one). Had d been flattened into x's LR they would be side by side.
+    expect(Math.abs(ay - by)).toBeGreaterThan(Math.abs(ax - bx));
+  });
+
+  it('routes a black-boxed interior, wrapping w so p2 exits over a single bridge', async () => {
+    // `c -> p1` flattens the root and black-boxes the tb `w`. Because `p2 -> sink`
+    // exits `w` through its container-child `x`, `w`'s uniform interior is WRAPPED: the
+    // interior `z -> p2` ELK-routes through the flattened interior, and `p2 -> sink`
+    // exits with a port on `x`, one hand-drawn BRIDGE over the wrapper, and a port on
+    // `w`'s edge (exposed through the flattened `b`/`a`). One wrapper, one bridge.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:auto',
+        '  subprocess a',
+        '    task',
+        '    port p1 e',
+        '    subprocess b',
+        '      task c',
+        '        --- p1',
+        '      subprocess w',
+        '        direction tb',
+        '        subprocess x',
+        '          task',
+        '          port p2 e',
+        '          subprocess y',
+        '            task z',
+        '              --- p2',
+        '  task sink',
+        '    p1 ---',
+        '    p2 ---',
+      ].join('\n'),
+    );
+    // Four lines → 5 edges: c---p1, z---p2, p1---sink, and p2---sink's wrapper exit
+    // (an ELK span + a bridge over the wrapper). Exactly one blue hand-drawn bridge.
+    const wrappers = collectEls().filter((e) => e.attrs.class === 'bpmn-debug-wrapper').length;
+    expect(edges().length).toBe(5);
+    expect(blueBridges()).toBe(1);
+    expect(wrappers).toBe(1);
+  });
+
+  it('wraps a deep uniform black-box interior: z---s exits with 2 ports + 1 bridge', async () => {
+    // c---s flattens the root and black-boxes the tb `w`. `z` is 2 uniform levels (x, y)
+    // deep inside `w`, so `w`'s interior is FLATTENED by a synthetic wrapper: z---s exits
+    // with one port on `w`'s direct child (one ELK edge through the flattened interior),
+    // a single hand-drawn BRIDGE over the wrapper, and a port on `w` — 2 ports, 1 bridge,
+    // vs the old 3-port chain. `w---s` is a plain exposed edge; `c---s` flattens.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:auto',
+        '  subprocess a',
+        '    task',
+        '    subprocess b',
+        '      task c',
+        '      subprocess w',
+        '        direction tb',
+        '        subprocess x',
+        '          task',
+        '          subprocess y',
+        '            task z',
+        '  task s',
+        '    c ---',
+        '    z ---',
+        '    w ---',
+      ].join('\n'),
+    );
+    const wrappers = collectEls().filter((e) => e.attrs.class === 'bpmn-debug-wrapper').length;
+    expect(edges().length).toBe(5); // c---s (1) + z---s cascade (3) + w---s (1)
+    expect(blueBridges()).toBe(1); // the single wrapper crossing
+    expect(wrappers).toBe(1); // one synthetic INCLUDE wrapper region (magenta)
+  });
+
+  it('renders a declared port inside a wrapped black-box interior without throwing', async () => {
+    // `z---s` (2 levels deep) wraps `w`. `x` also carries a declared port `px` used by
+    // `px---s` — a port on a container that the wrapper flattens (an intermediate INCLUDE
+    // node, whose port stays valid). This must still route, not throw or drop.
+    await render(
+      [
+        'bpmn',
+        '  subprocess a',
+        '    task',
+        '    subprocess b',
+        '      task c',
+        '      subprocess w',
+        '        direction tb',
+        '        subprocess x',
+        '          port px e',
+        '          subprocess y',
+        '            task z',
+        '  task s',
+        '    c ---',
+        '    z ---',
+        '    px ---',
+      ].join('\n'),
+    );
+    // All three lines produce a drawn edge; nothing throws.
+    expect(edges().length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('routes every port line of a wrapped tb region — one bridge for the deep exit', async () => {
+    // The p3-example: `c -> p1` and `p3 -> sink` flatten the root and black-box `w`;
+    // `z -> p2` routes inside `w`, and `p3 -> sink` exits through `w`'s exposed edge.
+    // `w`'s uniform interior is WRAPPED (a line exits it via a container-child), so the
+    // deep `p2 -> sink` exit cascades over a single hand-drawn bridge. Adding `p3`
+    // demotes nothing; everything else ELK-routes.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:auto',
+        '  subprocess a',
+        '    task',
+        '    port p1 e',
+        '    subprocess b',
+        '      task c',
+        '        --- p1',
+        '      subprocess w',
+        '        direction tb',
+        '        subprocess x',
+        '          task',
+        '          port p2 e',
+        '          subprocess y',
+        '            task z',
+        '              --- p2',
+        '        port p3 e',
+        '  task sink',
+        '    p1 ---',
+        '    p2 ---',
+        '    p3 ---',
+      ].join('\n'),
+    );
+    expect(edges().length).toBe(6);
+    expect(blueBridges()).toBe(1); // the single wrapper crossing for p2 -> sink's deep exit
+  });
+
+  it('caps a depth:2 chain, still wrapping w so the deep exit rides one bridge', async () => {
+    // The p3-example again, but p2 -> sink carries `route depth:2`. `w` is still
+    // WRAPPED (a line exits its container-child), so the deep exit cascades over one
+    // hand-drawn bridge regardless of the depth cap — depth:2 is indistinguishable from
+    // auto here. One blue bridge; every other line ELK-routes.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  subprocess a',
+        '    task',
+        '    port p1 e',
+        '    subprocess b',
+        '      task c',
+        '        --- p1',
+        '      subprocess w',
+        '        direction tb',
+        '        subprocess x',
+        '          task',
+        '          port p2 e',
+        '          subprocess y',
+        '            task z',
+        '              --- p2',
+        '        port p3 e',
+        '  task sink',
+        '    p1 ---',
+        '    p2 ---',
+        '      route depth:2',
+        '    p3 ---',
+      ].join('\n'),
+    );
+    expect(edges().length).toBe(6);
+    expect(blueBridges()).toBe(1); // p2 -> sink's deep exit still rides the wrapper bridge
+  });
+
+  it('demotes one blocking flatten; the demoted line exits over the wrapper bridge', async () => {
+    // Same as above but WITHOUT the z -> p2 interior line. Three flattens contend:
+    // c->p1 and p3->sink need `w` SEPARATE (they black-box it) while p2->sink wants `w`
+    // INCLUDE on its corridor. The conflict graph is a star centred on p2->sink —
+    // demoting that ONE line frees both others (not the two leaves). `w`'s uniform
+    // interior is WRAPPED (the demoted p2->sink exits via container-child x), so the
+    // demoted line cascades OUT over one hand-drawn bridge; everything else ELK-routes.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:auto',
+        '  subprocess a',
+        '    task',
+        '    port p1 e',
+        '    subprocess b',
+        '      task c',
+        '        --- p1',
+        '      subprocess w',
+        '        direction tb',
+        '        subprocess x',
+        '          task',
+        '          port p2 e',
+        '          subprocess y',
+        '            task z',
+        '        port p3 e',
+        '  task sink',
+        '    p1 ---',
+        '    p2 ---',
+        '    p3 ---',
+      ].join('\n'),
+    );
+    expect(edges().length).toBe(5);
+    expect(blueBridges()).toBe(1); // p2->sink bridges; c->p1 and p3->sink flatten
+  });
+
+  it('routes a deep interior line into the wrapped box own port via a bridge', async () => {
+    // x (tb) is the SEPARATE black-box; its uniform interior is wrapped. p2 is a port ON
+    // x's own boundary. p2->sink is exposed through the flattened b/a and ELK-routes
+    // (no bridge). The deep interior line z->p2 goes from inside x's wrapper to x's OWN
+    // shell port (x is the LCA). ELK cannot route across the wrapper, so z gets an
+    // auto-port on `y` — x's outermost INCLUDE child — reaches it in one ELK edge, then a
+    // single hand-drawn BRIDGE crosses the wrapper to p2. c->p1 and p1->sink flatten. So
+    // 5 edges (z->y ELK edge + wrapper bridge among them), one blue bridge; nothing dropped.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:auto',
+        '  subprocess a',
+        '    task',
+        '    port p1 e',
+        '    subprocess b',
+        '      task c',
+        '        --- p1',
+        '      subprocess x',
+        '        direction tb',
+        '        task',
+        '        port p2 e',
+        '        subprocess y',
+        '          task z',
+        '            --- p2',
+        '  task sink',
+        '    p1 ---',
+        '    p2 ---',
+      ].join('\n'),
+    );
+    expect(edges().length).toBe(5); // c->p1, p1->sink, p2->sink, z->y (ELK), y->p2 (bridge)
+    expect(blueBridges()).toBe(1); // z->p2 crosses the wrapper as a single hand-drawn bridge
+  });
+
+  it('treats depth:0 as the default and depth:9999 as equivalent to depth:auto', async () => {
+    // `depth` is only an autoport BUDGET, spent when a line cannot flatten. The DEFAULT is
+    // depth:0 — no budget at all, so an unflattenable crossing is a pure hand-drawn
+    // bridge — and `depth:auto` is the opt-in that grants an unlimited budget. Two
+    // equivalence classes, checked on the fully drawn geometry rather than mere counts:
+    //   depth:0 ≡ no route      (0 is the default)
+    //   depth:9999 ≡ depth:auto (any budget past the nesting depth is unlimited)
+    // and the two classes must DIFFER — otherwise `depth:auto` would not be doing anything.
+    const body = [
+      '  subprocess a',
+      '    task',
+      '    subprocess b',
+      '      task c',
+      '      subprocess w',
+      '        direction tb',
+      '        subprocess x',
+      '          task',
+      '          subprocess y',
+      '            task z',
+      '  task s',
+      '    c ---',
+      '    z ---',
+      '    w ---',
+    ];
+    const geom = async (header: string[]): Promise<string> => {
+      await render(['bpmn', ...header, ...body].join('\n'));
+      return edges()
+        .map((p) => p.attrs.d)
+        .sort()
+        .join('|');
+    };
+    const plain = await geom([]);
+    const zero = await geom(['  route depth:0']);
+    const auto = await geom(['  route depth:auto']);
+    const big = await geom(['  route depth:9999']);
+    expect(zero).toBe(plain);
+    expect(big).toBe(auto);
+    expect(auto).not.toBe(plain);
+  });
+
+  it('renders an undirected mixed cross line with no head', async () => {
+    await render(
+      [
+        'bpmn tb',
+        '  region Left lr',
+        '    task A',
+        '    task B',
+        '  region Right tb',
+        '    task C',
+        '    task D',
+        '  A --- C',
+        '    route depth:1',
+      ].join('\n'),
+    );
+    // Undirected, so no head. `Left` (lr) is SEPARATE → A chains out via one port;
+    // `Right` (tb) shares the root flow → INCLUDE, so C needs none: 2 polylines.
+    expect(heads()).toBe(0);
+    expect(edges().length).toBe(2);
+  });
+
+  it('routes a complex line through nested west ports without throwing', async () => {
+    // `p` (w) and `p1` (w) are both west ports. `x` (tb) is a black-box; the `region` (lr)
+    // inside it is a nested black-box, and `p---p1` reaching into it wraps `x`'s interior.
+    // `p---p1` runs from `p` on `x`'s OWN shell to `p1` deep on `s1` inside the wrapper
+    // (LCA is `x`): it ports the `region` boundary it crosses, reaches it via an ELK edge,
+    // then BRIDGES over the wrapper to `p`. So a---p (ELK) + p1->region (ELK) +
+    // region->p (bridge) = 3 valid, non-red edges; routes cleanly, no throw. NOTE: `s1`
+    // sits flush against `region`'s west edge, so its declared port `p1` and the auto-port
+    // on `region` nearly coincide — the p1->region attach segment renders near-degenerate
+    // (a geometric quirk of the flush west edges, not a routing error).
+    await render(
+      [
+        'bpmn',
+        '  route depth:auto',
+        '  task a',
+        '  subprocess x',
+        '   direction tb',
+        '   region lr',
+        '     subprocess s1',
+        '       port p1 w',
+        '     task s2',
+        '   port p w',
+        '  a --- p --- p1',
+      ].join('\n'),
+    );
+    expect(edges().length).toBe(3);
     expect(edges().every((p) => p.attrs.class === 'bpmn-edge')).toBe(true);
+  });
+
+  // ---- swimlanes ----------------------------------------------------------
+  //
+  // A pool is ALWAYS a black-box and a branching lane normally becomes one too, so a
+  // line reaching into a swimlane is chained or bridged rather than flattening it.
+  // That is load-bearing for two separate reasons — the lane's direction, and the
+  // pool's geometry — so both get a test.
+
+  it("keeps a lane's own flow direction when a line crosses out of it", async () => {
+    // Pool P flows LR, so it stacks its lanes across that (TB) while each lane runs LR.
+    // `A --> D` crosses from L1 into L2, with the pool as the LCA. Flattening the pool to
+    // route it would impose the pool's TB on L1 and stack A above B; L1 branches (2 box
+    // children) so it must stay a black-box and keep its LR instead.
+    await render(
+      [
+        'bpmn LR',
+        '  pool P',
+        '    lane L1',
+        '      task A',
+        '      task B',
+        '      A --> B',
+        '    lane L2',
+        '      data D',
+        '      A --> D',
+      ].join('\n'),
+    );
+    // A and B are the only activities, so the two activity rects are exactly them.
+    const boxes = allRects().filter((e) => (e.attrs.class ?? '').includes('bpmn-activity'));
+    expect(boxes.length).toBe(2);
+    const dx = Math.abs(Number(boxes[0].attrs.x) - Number(boxes[1].attrs.x));
+    const dy = Math.abs(Number(boxes[0].attrs.y) - Number(boxes[1].attrs.y));
+    expect(dx).toBeGreaterThan(dy); // side by side (LR), not stacked (TB)
+  });
+
+  it('keeps a one-lane pool and an empty pool intact alongside a crossing line', async () => {
+    // The degenerate swimlane shapes, which the black-box rule must not disturb: a pool
+    // with a SINGLE lane (the lane is a collapsible shell, so normalization pushes its
+    // direction down) and a pool with NO lanes at all (a leaf box, which has no hierarchy
+    // to handle). Both must still render at a real size with the crossing line drawn.
+    await render(
+      [
+        'bpmn LR',
+        '  pool Solo',
+        '    lane OnlyOne',
+        '      task A',
+        '  pool Empty',
+        '  A --> Empty',
+      ].join('\n'),
+    );
+    const pools = allRects().filter((e) => (e.attrs.class ?? '').includes('bpmn-pool'));
+    expect(pools.length).toBe(2);
+    for (const p of pools) {
+      expect(Number(p.attrs.width)).toBeGreaterThan(0);
+      expect(Number(p.attrs.height)).toBeGreaterThan(0);
+    }
+    // The cross-pool line is drawn, and as a message flow (dashed).
+    expect(edges().length).toBeGreaterThanOrEqual(1);
+    expect(edges().some((p) => (p.attrs.class ?? '').includes('bpmn-message-flow'))).toBe(true);
+  });
+
+  it('puts a message flow origin circle and slash on exactly one segment of a chained route', async () => {
+    // A cross-pool line is a message flow: dashed, a hollow head at the target and a small
+    // open circle at its ORIGIN. With `depth:auto` the line becomes a CHAIN of several
+    // segments (ports out of the lane and the pool on each side, plus an ELK join), and
+    // each end decoration belongs to exactly one geometric endpoint — so exactly one
+    // segment may draw the circle, one the head, and one the leading `/` slash. Getting
+    // this wrong smears a marker across every segment of the line.
+    await render(
+      [
+        'bpmn LR',
+        '  pool P1',
+        '    lane L1',
+        '      task A',
+        '      task A2',
+        '  pool P2',
+        '    lane L2',
+        '      task B',
+        '      task B2',
+        '  A /--> B',
+        '    route depth:auto',
+      ].join('\n'),
+    );
+    const flows = edges().filter((p) => (p.attrs.class ?? '').includes('bpmn-message-flow'));
+    // The line really did split into a chain (otherwise this proves nothing).
+    expect(flows.length).toBeGreaterThan(1);
+    // Both decorations ride a `marker-start`: a chain's touch segment runs
+    // endpoint -> port, so the endpoint is that polyline's START. They are told apart by
+    // what the marker holds — a <circle> for the origin, a <path> for the hollow head.
+    const marks = (p: El): El[] =>
+      [markerByRef(p.attrs['marker-start']), markerByRef(p.attrs['marker-end'])].filter(
+        (m): m is El => !!m,
+      );
+    const carries = (p: El, tag: string): boolean =>
+      marks(p).some((m) => m.children.some((c) => c.nodeName === tag));
+    expect(flows.filter((p) => carries(p, 'circle')).length).toBe(1);
+    expect(flows.filter((p) => carries(p, 'path')).length).toBe(1);
+    // …and never both on one segment: each end belongs to its own side of the line.
+    expect(flows.findIndex((p) => carries(p, 'circle'))).not.toBe(
+      flows.findIndex((p) => carries(p, 'path')),
+    );
+    // Exactly one slash tick, from the single leading `/`.
+    const slashes = collectEls().filter((e) => e.attrs.class === 'bpmn-edge-slash');
+    expect(slashes.length).toBe(1);
+  });
+
+  it("draws the arrowhead at the endpoint, not the wrapper shell, when the endpoint IS the wrapper's outer child", async () => {
+    // `W` (tb) differs from the root (lr) and branches (2 container children: region Alpha,
+    // subprocess Beta) → a black-box. The internal line `leaf1 --- leafR` crosses between
+    // Alpha and Beta (both container-children of W), so W's interior is WRAPPED.
+    // `Source --> Beta` then targets Beta itself — Beta *is* the wrapper's outer child, with
+    // nothing deeper — so per the `wrapped.has(C)` cascade, Beta's side produces ONLY a
+    // hand-drawn bridge (Beta's box -> a port on W's shell), no ELK segment. That bridge is
+    // the side's sole touch element and must carry the arrowhead; before the fix it always
+    // landed on the ELK join instead (at the shell port), so the head rendered at W's
+    // boundary instead of at Beta.
+    await render(
+      [
+        'bpmn lr',
+        '  task Source',
+        '  region W tb',
+        '    region Alpha',
+        '      task leaf1',
+        '        --- leafR',
+        '    subprocess Beta',
+        '      task leafR',
+        '  Source --> Beta',
+      ].join('\n'),
+    );
+    // Beta is an activity CONTAINER (unlike `region`, its drawn box is not cosmetically
+    // expanded to tile its parent — see bpmnStyle's drawNode), so its rect is exactly its
+    // real anchor geometry. It is the only activity that is also a container.
+    const betaRect = collectEls().find(
+      (e) =>
+        e.nodeName === 'rect' &&
+        (e.attrs.class ?? '').includes('bpmn-activity') &&
+        (e.attrs.class ?? '').includes('bpmn-container'),
+    )!;
+    expect(betaRect).toBeDefined();
+    const bx = Number(betaRect.attrs.x);
+    const by = Number(betaRect.attrs.y);
+    const bh = Number(betaRect.attrs.height);
+    const headed = edges().find((p) => p.attrs['marker-start'] || p.attrs['marker-end']);
+    expect(headed).toBeDefined();
+    const nums = (headed!.attrs.d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+    const atStart = !!headed!.attrs['marker-start'];
+    const [hx, hy] = atStart ? [nums[0], nums[1]] : [nums[nums.length - 2], nums[nums.length - 1]];
+    // The head must sit on Beta's own boundary (its west edge, since Source enters from the
+    // left) — not on W's outer shell further to the right.
+    expect(hx).toBeCloseTo(bx, 0);
+    expect(hy).toBeGreaterThanOrEqual(by - 0.5);
+    expect(hy).toBeLessThanOrEqual(by + bh + 0.5);
   });
 });

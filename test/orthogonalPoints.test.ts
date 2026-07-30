@@ -1,112 +1,104 @@
 import { describe, expect, it } from 'vitest';
-import { orthogonalPoints } from '../src/renderer.js';
+import { type AbsRect, orthogonalPoints } from '../src/layout/geometry.js';
 
-// Unit tests for the hand-drawn bridge shaper. The source box sits top-left, the
-// target box bottom-right, so the two ends are more separated along x.
-const s = { x: 0, y: 0, w: 100, h: 60 }; // centre (50, 30)
-const t = { x: 300, y: 200, w: 100, h: 60 }; // centre (350, 230)
+type Pt = { x: number; y: number };
 
-describe('orthogonalPoints', () => {
-  it('z is a symmetric HVH (4 points, both ends on a vertical edge)', () => {
-    expect(orthogonalPoints(s, t, 'z')).toEqual([
-      { x: 100, y: 30 },
-      { x: 200, y: 30 },
-      { x: 200, y: 230 },
-      { x: 300, y: 230 },
-    ]);
+const isH = (p: Pt, q: Pt): boolean => Math.abs(p.y - q.y) < 1e-6 && Math.abs(p.x - q.x) > 1e-6;
+const isV = (p: Pt, q: Pt): boolean => Math.abs(p.x - q.x) < 1e-6 && Math.abs(p.y - q.y) > 1e-6;
+
+// The source box sits top-left, the target box down-and-right of it, so the two
+// are separated on both axes (a diagonal offset) — the case where an L reads best.
+const S: AbsRect = { x: 0, y: 0, w: 40, h: 40 };
+const T: AbsRect = { x: 200, y: 200, w: 40, h: 40 };
+
+describe('orthogonalPoints — z/n/auto S-bends', () => {
+  it('z leaves left/right (HVH): two horizontal ends, four points', () => {
+    const p = orthogonalPoints(S, T, 'z');
+    expect(p).toHaveLength(4);
+    expect(isH(p[0], p[1])).toBe(true);
+    expect(isH(p[2], p[3])).toBe(true);
   });
 
-  it('n is a symmetric VHV (4 points, both ends on a horizontal edge)', () => {
-    expect(orthogonalPoints(s, t, 'n')).toEqual([
-      { x: 50, y: 60 },
-      { x: 50, y: 130 },
-      { x: 350, y: 130 },
-      { x: 350, y: 200 },
-    ]);
+  it('n leaves top/bottom (VHV): two vertical ends, four points', () => {
+    const p = orthogonalPoints(S, T, 'n');
+    expect(p).toHaveLength(4);
+    expect(isV(p[0], p[1])).toBe(true);
+    expect(isV(p[2], p[3])).toBe(true);
   });
 
-  it('l with an e exit / n enter is a single HV corner off the source edge', () => {
-    expect(orthogonalPoints(s, t, 'l', 'e', 'n')).toEqual([
-      { x: 100, y: 30 }, // leaves the east edge
-      { x: 350, y: 30 }, // one corner
-      { x: 350, y: 200 }, // enters the north edge
-    ]);
+  it('auto stays an S-bend when the edges face each other (opposite sides)', () => {
+    // exit e / enter w are on the same (horizontal) axis → not 90° → no L.
+    const p = orthogonalPoints(S, T, 'auto', 'e', 'w');
+    expect(p).toHaveLength(4);
+  });
+});
+
+describe('orthogonalPoints — l single-corner turns', () => {
+  it('HV for a horizontal exit side (e): across, then down into the target', () => {
+    const p = orthogonalPoints(S, T, 'l', 'e');
+    expect(p).toHaveLength(3);
+    expect(isH(p[0], p[1])).toBe(true); // leaves on the e side, running horizontally
+    expect(isV(p[1], p[2])).toBe(true); // one corner, then vertical into the target
+    // Leaves the source's right edge at source-center height; enters the target's
+    // top at target-center column.
+    expect(p[0]).toEqual({ x: 40, y: 20 });
+    expect(p[2]).toEqual({ x: 220, y: 200 });
   });
 
-  it('l with an s exit / w enter is a single VH corner off the source edge', () => {
-    expect(orthogonalPoints(s, t, 'l', 's', 'w')).toEqual([
-      { x: 50, y: 60 }, // leaves the south edge
-      { x: 50, y: 230 }, // one corner
-      { x: 300, y: 230 }, // enters the west edge
-    ]);
+  it('VH for a vertical exit side (s): down, then across into the target', () => {
+    const p = orthogonalPoints(S, T, 'l', 's');
+    expect(p).toHaveLength(3);
+    expect(isV(p[0], p[1])).toBe(true);
+    expect(isH(p[1], p[2])).toBe(true);
+    expect(p[0]).toEqual({ x: 20, y: 40 }); // leaves the source's bottom edge
+    expect(p[2]).toEqual({ x: 200, y: 220 }); // enters the target's left edge
+  });
+});
+
+describe('orthogonalPoints — auto S-bend follows a fixed edge over the box angle', () => {
+  // Boxes separated mostly HORIZONTALLY: the box-angle would pick a Z (HVH). But a
+  // fixed VERTICAL edge (s/n, same axis so no L) must win → N (VHV), vertical ends.
+  it('picks N (vertical ends) for vertical edges despite a horizontal gap', () => {
+    const s: AbsRect = { x: 0, y: 0, w: 40, h: 40 };
+    const t: AbsRect = { x: 400, y: 50, w: 40, h: 40 };
+    const p = orthogonalPoints(s, t, 'auto', 's', 'n');
+    expect(p).toHaveLength(4);
+    expect(isV(p[0], p[1])).toBe(true);
+    expect(isV(p[2], p[3])).toBe(true);
   });
 
-  it('auto picks l (a single corner) when exit and enter edges are perpendicular', () => {
-    const pts = orthogonalPoints(s, t, 'auto', 'e', 'n');
-    expect(pts).toHaveLength(3);
-    expect(pts).toEqual([
-      { x: 100, y: 30 },
-      { x: 350, y: 30 },
-      { x: 350, y: 200 },
-    ]);
+  // Boxes separated mostly VERTICALLY: the box-angle would pick an N (VHV). But a
+  // fixed HORIZONTAL edge (e/w) must win → Z (HVH), horizontal ends.
+  it('picks Z (horizontal ends) for horizontal edges despite a vertical gap', () => {
+    const s: AbsRect = { x: 0, y: 0, w: 40, h: 40 };
+    const t: AbsRect = { x: 50, y: 400, w: 40, h: 40 };
+    const p = orthogonalPoints(s, t, 'auto', 'e', 'w');
+    expect(p).toHaveLength(4);
+    expect(isH(p[0], p[1])).toBe(true);
+    expect(isH(p[2], p[3])).toBe(true);
   });
 
-  it('auto keeps the symmetric shape when exit and enter edges are parallel', () => {
-    // e/w are both horizontal → not 90°, so it falls back to the axis-by-separation
-    // HVH shape (x-separation dominates here).
-    const pts = orthogonalPoints(s, t, 'auto', 'e', 'w');
-    expect(pts).toHaveLength(4);
-    expect(pts).toEqual(orthogonalPoints(s, t, 'z'));
+  // One side alone is enough to fix the axis (the other end has no chain/port).
+  it('follows a lone exit side when the enter side is unknown', () => {
+    const s: AbsRect = { x: 0, y: 0, w: 40, h: 40 };
+    const t: AbsRect = { x: 400, y: 50, w: 40, h: 40 };
+    const p = orthogonalPoints(s, t, 'auto', 's');
+    expect(p).toHaveLength(4);
+    expect(isV(p[0], p[1])).toBe(true);
+  });
+});
+
+describe('orthogonalPoints — auto picks l at 90°', () => {
+  it('turns into an l when exit and enter axes are perpendicular', () => {
+    // exit e (horizontal) + enter n (vertical) = 90° → single-corner L (HV).
+    const p = orthogonalPoints(S, T, 'auto', 'e', 'n');
+    expect(p).toHaveLength(3);
+    expect(isH(p[0], p[1])).toBe(true);
+    expect(isV(p[1], p[2])).toBe(true);
   });
 
-  it('an absent bend behaves like auto', () => {
-    expect(orthogonalPoints(s, t, undefined, 'e', 'n')).toEqual(orthogonalPoints(s, t, 'auto', 'e', 'n'));
-  });
-
-  it('l without resolved sides falls back to the dominant-separation axis', () => {
-    // x dominates → leaves east, turns down into the target's north edge.
-    expect(orthogonalPoints(s, t, 'l')).toEqual([
-      { x: 100, y: 30 },
-      { x: 350, y: 30 },
-      { x: 350, y: 200 },
-    ]);
-  });
-
-  // A target far below the source (y-separation dominates): plain geometry auto
-  // picks a VHV (n) shape.
-  const below = { x: 200, y: 400, w: 100, h: 60 }; // centre (250, 430)
-
-  it('auto uses box geometry (VHV here) when neither edge is fixed', () => {
-    const pts = orthogonalPoints(s, below, 'auto', 'e', 'w', false, false);
-    expect(pts).toEqual([
-      { x: 50, y: 60 }, // leaves the south edge (vertical first)
-      { x: 50, y: 230 },
-      { x: 250, y: 230 },
-      { x: 250, y: 400 },
-    ]);
-  });
-
-  it('auto follows a fixed source edge (e → HVH) against the geometry', () => {
-    // The source is a port pinned on the east (horizontal) edge, so despite the
-    // dominant y-separation the line must leave horizontally → HVH (z).
-    const pts = orthogonalPoints(s, below, 'auto', 'e', 'w', true, false);
-    expect(pts).toEqual(orthogonalPoints(s, below, 'z'));
-    expect(pts[0]).toEqual({ x: 100, y: 30 }); // leaves the east edge
-  });
-
-  it('auto follows a fixed target edge when the source is free', () => {
-    // Target pinned on a vertical (n) edge, source free; x-separation dominates so
-    // geometry alone would pick HVH, but the fixed target edge forces VHV (n).
-    const right = { x: 400, y: 0, w: 100, h: 60 }; // centre (450, 30), x dominates
-    const geom = orthogonalPoints(s, right, 'auto', undefined, undefined);
-    expect(geom).toEqual(orthogonalPoints(s, right, 'z')); // geometry → HVH
-    const fixed = orthogonalPoints(s, right, 'auto', undefined, 'n', false, true);
-    expect(fixed).toEqual(orthogonalPoints(s, right, 'n')); // fixed edge → VHV
-  });
-
-  it('a fixed source edge takes precedence over a fixed target edge', () => {
-    // Both parallel-horizontal fixed edges agree on HVH; the source is consulted first.
-    const pts = orthogonalPoints(s, below, 'auto', 'e', 'w', true, true);
-    expect(pts).toEqual(orthogonalPoints(s, below, 'z'));
+  it('does not pick l without side info (plain geometric auto)', () => {
+    const p = orthogonalPoints(S, T, 'auto');
+    expect(p).toHaveLength(4);
   });
 });

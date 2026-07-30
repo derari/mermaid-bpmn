@@ -1,7 +1,7 @@
 // One entry per feature you want to eyeball. Add cases as the diagram grows.
 //
 // Ordered to introduce one concept at a time, roughly following the README:
-// activities -> pools/lanes -> gateways -> events -> labels -> artifacts ->
+// activities -> gateways -> events -> labels -> artifacts -> pools/lanes ->
 // lines -> colors -> icons -> regions -> ports -> cross-boundary routing.
 export const cases = [
   // --- Activities -----------------------------------------------------------
@@ -59,64 +59,6 @@ export const cases = [
     end
     start --> Process
     Process --> end`,
-  },
-  // --- Pools and lanes ------------------------------------------------------
-  {
-    title: 'Empty pool',
-    code: `bpmn tb
-  pool "Order handling"
-  pool "Processing" lr`,
-  },
-  {
-    title: 'Pool with lanes (horizontal)',
-    code: `bpmn LR
-  pool "Order process"
-    lane "Customer"
-    lane "Warehouse"
-      task Pick
-      task Ship
-      Pick --> Ship
-  pool "Approval"
-    lane "Reviewer"
-    lane "Manager"
-      task Check
-      task Approve
-      Check --> Approve`,
-  },
-  {
-    title: 'Pool with lanes (vertical)',
-    code: `bpmn TB
-  pool "Order process"
-    lane "Customer"
-    lane "Warehouse"
-      task Pick
-      task Ship
-      Pick --> Ship
-  pool "Approval"
-    lane "Reviewer"
-    lane "Manager"
-      task Check
-      task Approve
-      Check --> Approve`,
-  },
-  {
-    title: 'Auto-sequence (inherited on, opt-out lane)',
-    code: `bpmn
-  auto-sequence
-  pool "Order"
-    lane "Sales"
-      start
-      gate
-        --> Review
-        --> Approve
-      user task Review
-        --> end
-      task Approve
-      end
-    lane "Ops"
-      auto-sequence off
-      task Pack
-      task Ship`,
   },
   // --- Gateways -------------------------------------------------------------
   {
@@ -351,6 +293,64 @@ export const cases = [
   Review --- near
   comment filled "Filled note" :::hi
   classDef hi fill:#fff3c4`,
+  },
+  // --- Pools and lanes ------------------------------------------------------
+  {
+    title: 'Empty pool',
+    code: `bpmn tb
+  pool "Order handling"
+  pool "Processing" lr`,
+  },
+  {
+    title: 'Pool with lanes (horizontal)',
+    code: `bpmn LR
+  pool "Order process"
+    lane "Customer"
+    lane "Warehouse"
+      task Pick
+      task Ship
+      Pick --> Ship
+  pool "Approval"
+    lane "Reviewer"
+    lane "Manager"
+      task Check
+      task Approve
+      Check --> Approve`,
+  },
+  {
+    title: 'Pool with lanes (vertical)',
+    code: `bpmn TB
+  pool "Order process"
+    lane "Customer"
+    lane "Warehouse"
+      task Pick
+      task Ship
+      Pick --> Ship
+  pool "Approval"
+    lane "Reviewer"
+    lane "Manager"
+      task Check
+      task Approve
+      Check --> Approve`,
+  },
+  {
+    title: 'Auto-sequence (inherited on, opt-out lane)',
+    code: `bpmn
+  auto-sequence
+  pool "Order"
+    lane "Sales"
+      start
+      gate
+        --> Review
+        --> Approve
+      user task Review
+        --> end
+      task Approve
+      end
+    lane "Ops"
+      auto-sequence off
+      task Pack
+      task Ship`,
   },
   // --- Lines ----------------------------------------------------------------
   {
@@ -805,34 +805,22 @@ export const cases = [
   task B`,
   },
   {
-    title: 'Error: an unresolved line target, placed beside the valid end',
+    title: 'Error: unresolved line target',
     code: `bpmn
   task A
-  A --> Missing`,
-  },
-  {
-    title: 'Error: both ends unresolved — two error nodes at the diagram root',
-    code: `bpmn
-  X --> Y`,
-  },
-  {
-    title: 'Error: an unresolved target inside a lane sits next to its source',
-    code: `bpmn
+  A --> Missing
+  X --> Y
   lane L
-    task A
-    A --> Nowhere`,
+    task B
+    B --> Nowhere`,
   },
   {
-    title: 'Error: a misspelled container with { becomes an error box holding its children',
+    title: 'Error: violations with nesting',
     code: `bpmn LR
   subprxocess {
 task a
 task b
-}`,
-  },
-  {
-    title: 'Error: a nesting violation becomes an error node in place',
-    code: `bpmn
+}
   pool P
     task T`,
   }

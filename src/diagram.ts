@@ -6,7 +6,7 @@ import { db } from './db.js';
 // shape ({ id, diagram }) rather than reaching into an internal deep import.
 type DiagramDefinition = Awaited<ReturnType<ExternalDiagramDefinition['loader']>>['diagram'];
 import { parser } from './parser.js';
-import { renderer } from './renderer.js';
+import { renderer } from './render.js';
 import styles from './styles.js';
 import { setConfigGetter } from './theme.js';
 

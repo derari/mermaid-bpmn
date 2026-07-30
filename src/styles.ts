@@ -50,7 +50,12 @@ const styles = (options: ThemeOptions = {}): string => {
     stroke: ${INVALID};
     stroke-width: 3px;
   }
-  .bpmn-label {
+  /* Every caption: on a node (\`bpmn-label\`) or along a connection
+     (\`bpmn-line-label\`). The two share one rule because a line caption is measured
+     in the class it is drawn with — giving them different metrics would make the
+     box ELK reserves disagree with the text that lands in it. */
+  .bpmn-label,
+  .bpmn-line-label {
     fill: ${text};
     font-family: ${font};
     font-size: ${fontSize};
