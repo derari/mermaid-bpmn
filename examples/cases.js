@@ -23,10 +23,10 @@ export const cases = [
     title: 'Activity types',
     code: `bpmn
   task "Task"
-  subprocess "Subprocess"
   call "Call activity"
-  call-subprocess "Call subprocess"
-  event-subprocess "Event subprocess"
+  subprocess "Subprocess"
+  call subprocess "Call subprocess"
+  event subprocess "Event subprocess"
   transaction "Transaction"`,
   },
   {
@@ -35,6 +35,8 @@ export const cases = [
   user task "Approve"
   service task "Charge card"
   send task "Notify"
+  receive task "Wait for reply"
+  manual task "Flip the switch"
   script task "Transform"`,
   },
   {
@@ -124,10 +126,9 @@ export const cases = [
     exclusive gate
     inclusive gate
     parallel gate
-    event gate
     complex gate
+    event gate
   region "Aliases" LR
-    gate
     xor
     xor gate
     or
