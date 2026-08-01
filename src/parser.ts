@@ -967,14 +967,21 @@ function applyAutoSequencing(root: Entity): void {
   root.children.forEach((e) => build(e, undefined));
 
   // A boundary event attaches to an activity rather than sitting in the flow, so
-  // it is excluded from sequencing exactly like a data element.
+  // it is excluded from sequencing exactly like a data element. Comments (text),
+  // ports, regions, groups, and error diagnostics are also excluded as they are
+  // not sequenceable flow nodes.
   const isExcluded = (e: Entity): boolean =>
     e.type === 'data' ||
+    e.type === 'text' ||
+    e.type === 'port' ||
+    e.type === 'region' ||
+    e.type === 'group' ||
+    e.type === 'error' ||
     (e.type === 'event' && !!e.eventOperation && BOUNDARY_OPERATIONS.has(e.eventOperation));
 
   // Whether a line from `tail` to `dest` counts as an outgoing line for `tail`:
-  // the destination must exist, not be excluded (data / boundary), and share the
-  // tail's pool.
+  // the destination must exist, not be excluded (data / boundary / comment / etc),
+  // and share the tail's pool.
   const counts = (tail: Entity | undefined, dest: Entity | undefined): boolean =>
     !!tail && !!dest && !isExcluded(dest) && poolOf.get(tail) === poolOf.get(dest);
 

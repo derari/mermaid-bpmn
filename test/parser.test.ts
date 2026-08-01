@@ -1055,6 +1055,16 @@ describe('bpmn parser', () => {
       ]);
     });
 
+    it('sequences a node whose only outgoing line goes to a comment', () => {
+      parse('auto-sequence on', 'task A', 'comment Note "A comment"', 'task B', 'A --> Note');
+      const [a, , b] = db.getEntities();
+      // The link to comment does not count, so A is still sequenced to B.
+      expect(db.getLines()).toEqual([
+        { source: 'A', target: 'Note', type: '-->' },
+        { source: a, target: b, type: '-->' },
+      ]);
+    });
+
     it('skips a boundary event, sequencing across it like data', () => {
       parse('auto-sequence on', 'subprocess S', '  task a', '  boundary', '  task b');
       const [s] = db.getEntities();
