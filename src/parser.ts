@@ -877,18 +877,19 @@ const ROOT_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>([
   'event',
   'text',
 ]);
-const POOL_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>(['lane']);
-// task / call activities: only boundary events nest inside them.
-const ATOMIC_ACTIVITY_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>(['event']);
-// A text annotation holds only ports (an edge anchor is its only valid child).
-const TEXT_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>(['port']);
+const POOL_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>(['lane', 'port']);
+// task / call activities: only boundary events (and ports) nest inside them.
+const ATOMIC_ACTIVITY_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>(['event', 'port']);
+// Every entity can anchor edges, so a port is a valid child everywhere. It is the
+// only child a text annotation, gate, data object, or event accepts. A port itself
+// is a zero-size anchor with no border of its own, so it holds nothing.
+const PORT_ONLY_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>(['port']);
 const NO_CHILDREN: ReadonlySet<EntityType> = new Set<EntityType>();
 
 // Entity types that accept child objects, and so may open a curly-mode scope with
-// a trailing `{`. This mirrors the container roster in allowedChildTypes: the
-// swimlane containers, structural regions/groups, a comment (text), and every
-// activity (container activities hold flow; atomic ones hold boundary events).
-// The diagram root also opens a scope, via `bpmn {` (handled at the header).
+// a trailing `{`. Every entity family qualifies except `port` — even the leaf
+// families hold ports (see allowedChildTypes). The diagram root also opens a
+// scope, via `bpmn {` (handled at the header).
 const CURLY_CONTAINER_TYPES: ReadonlySet<EntityType> = new Set<EntityType>([
   'pool',
   'lane',
@@ -896,6 +897,9 @@ const CURLY_CONTAINER_TYPES: ReadonlySet<EntityType> = new Set<EntityType>([
   'group',
   'text',
   'activity',
+  'gate',
+  'data',
+  'event',
 ]);
 
 function isContainerActivity(entity: Entity): boolean {
@@ -915,10 +919,10 @@ function allowedChildTypes(parent: Entity, root: Entity): ReadonlySet<EntityType
       return FLOW_CHILDREN;
     case 'activity':
       return isContainerActivity(parent) ? FLOW_CHILDREN : ATOMIC_ACTIVITY_CHILDREN;
-    case 'text':
-      return TEXT_CHILDREN;
-    default: // gate, data, event, port
+    case 'port':
       return NO_CHILDREN;
+    default: // text, gate, data, event
+      return PORT_ONLY_CHILDREN;
   }
 }
 
@@ -1527,10 +1531,11 @@ export const parser = {
           insertError(`${where} cannot contain a ${draft.type}`);
           continue;
         }
-        // task / call activities accept only boundary events.
+        // task / call activities accept only boundary events (plus ports).
         if (
           effParent.type === 'activity' &&
           !isContainerActivity(effParent) &&
+          draft.type !== 'port' &&
           !(draft.eventOperation && BOUNDARY_OPERATIONS.has(draft.eventOperation))
         ) {
           insertError(`a ${effParent.activityType} activity can only contain boundary events`);

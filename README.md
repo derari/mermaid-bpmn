@@ -61,8 +61,8 @@ bpmn
 
 | Activity type                  | What it is                | May contain                                                |
 |--------------------------------|---------------------------|------------------------------------------------------------|
-| `task`                         | an atomic task            | boundary events only                                       |
-| `call`                         | a call activity           | boundary events only                                       |
+| `task`                         | an atomic task            | boundary events and ports only                             |
+| `call`                         | a call activity           | boundary events and ports only                             |
 | `subprocess` (alias `process`) | an expandable sub-process | activities, gateways, data, events, regions, groups, ports |
 | `call subprocess`              | a call sub-process (bold border) | same as `subprocess`                                |
 | `event subprocess`             | an event sub-process      | same as `subprocess`                                       |
@@ -491,11 +491,11 @@ so a hyphen inside a name is never mistaken for a connector.
 
 ### Curly syntax
 
-Any container (the diagram root, a pool, lane, region, group, or an expandable
-activity) may end its line with `{` to nest its contents in **braces** instead of
-by indentation. Inside a brace scope indentation is ignored — parent/child comes
-only from the nesting — and a `}` (one per scope, several may share a line) closes
-back to the enclosing container:
+Any entity declaration — the diagram root (`bpmn {`) or any entity but a `port`,
+since even the leaf families hold [ports](#ports) — may end its line with `{` to
+nest its contents in **braces** instead of by indentation. Inside a brace scope
+indentation is ignored — parent/child comes only from the nesting — and a `}` (one
+per scope, several may share a line) closes back to the enclosing container:
 
 ````
 ```bpmn
@@ -593,9 +593,6 @@ bpmn LR
     style stroke:#00897b
 ```
 ````
-
-An **invalid** line (an arrowhead on a port) is always bold red, ignoring any
-`stroke`.
 
 ### Icons
 
@@ -764,9 +761,11 @@ endpoints.
 
 ### Ports
 
-A `port` is a named connection point pinned to **one edge of its parent
-container**. It draws nothing itself; its whole job is to give [lines](#lines) a
-fixed spot on a container's boundary to enter or leave through. It is declared with
+A `port` is a named connection point pinned to **one edge of its parent entity**.
+It draws nothing itself; its whole job is to give [lines](#lines) a fixed spot on
+an entity's boundary to enter or leave through. **Every entity family accepts
+ports** — containers and leaves alike, so a task, gateway, event, data object, or
+text annotation can carry one too. It is declared with
 a **required trailing direction** — a compass side, `n`/`north`, `e`/`east`,
 `s`/`south`, `w`/`west` (case-insensitive) — after an optional name:
 
@@ -787,15 +786,11 @@ and `Out --> Database` carries on from that same point to the sibling activity.
 
 A few rules:
 
-- **A port lives on a container, never at the diagram root** — there is no edge to
+- **A port lives on an entity, never at the diagram root** — there is no edge to
   pin to there, so a root-level `port` is a parse error.
 - **A port holds nothing but lines.** Its name lets a line reference it, but it is
-  never drawn, so nesting an entity under a port, or giving one a quoted
-  [label](#names-and-labels), is a parse error.
-- **An arrowhead may never land on a port.** A port is a pass-through, not a
-  destination, so a `-->` whose target is a port (or a `<--` whose source is one)
-  is **invalid** — drawn **bold red**. Wire ports with undirected `---` lines, or
-  point the arrow at the entity on the *far* side.
+  never drawn, so nesting anything under a port (another port included), or giving
+  one a quoted [label](#names-and-labels), is a parse error.
 
 To see where ports land, enable the [`debug ports`](#debugging-ports) overlay.
 
@@ -852,6 +847,13 @@ key defaults to "do the automatic thing", an all-default `route` (`depth:0` on i
 own, say) is indistinguishable from no `route` at all. A `route` on a line that
 crosses no boundary has nothing to tune and is reported with a console warning.
 
+Left to itself, a line leaves the side of its source that faces the target — the
+axis from the enclosing flow direction, the direction from where the two ends
+actually ended up. That is settled *after* the first layout, so it holds even when
+the layout engine reorders the boxes (a stack of pools in particular). Writing
+`exit:` or `enter:` yourself, or attaching the line to a declared `port`, pins the
+side instead and is honoured literally.
+
 The full set of keys, the black-box model, and worked examples are in
 [docs/routing.md](docs/routing.md).
 
@@ -907,7 +909,6 @@ Everything below is for working on `mermaid-bpmn` itself, not for using it.
 | `src/icons.ts`                    | Icon-pack registry (incl. the always-on `bpmn` pack), lazy loading, and resolving `icon:pack:name` to inline SVG                                            |
 | `src/bpmnIcons.ts`                | Generated: the bundled `bpmn` icon pack — MDI-derived glyphs plus hand-drawn gateway/event markers. Regenerate with `npm run gen:icons`                     |
 | `scripts/generate-bpmn-icons.mjs` | Build-time generator: extracts the MDI icons from `@iconify-json/mdi` (a devDependency) and merges the hand-drawn gateway/event markers into `bpmnIcons.ts` |
-| `src/portTypes.ts`                | Flags invalid port lines (an arrowhead landing on a port) — pure, unit-tested                                                                               |
 | `src/theme.ts`                    | Bridges Mermaid's resolved theme variables into the renderer's palette (fill/stroke/line)                                                                   |
 | `src/render.ts`                   | The orchestrator: builds the ELK tree, runs the routing engine, lays out with elkjs, drives the draw pass                                                   |
 | `src/bpmnStyle.ts`                | Everything BPMN-SPECIFIC: how each family is sized and drawn, boundary-event ports, pool/lane fitting, per-line style. Swap this file for another notation  |

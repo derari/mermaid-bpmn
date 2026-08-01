@@ -1,12 +1,13 @@
 import ELK, { type ElkNode } from 'elkjs/lib/elk.bundled.js';
 import { type Direction, type Entity, type Line, type Side, db } from './db.js';
 import { resolveBoundaryAutoSides } from './boundarySides.js';
-import { analysePorts } from './portTypes.js';
 import { commonAncestorId } from './geometry.js';
 import {
   type Anchor,
   type ArrowEnd,
   analyzeInterior,
+  branchUnderLca,
+  laterFromGeometry,
   normalizeDirections,
   resolveEnterSide,
   resolveExitSide,
@@ -28,6 +29,7 @@ import {
   drawStraightEdge,
 } from './layout/edges.js';
 import {
+  type AutoSideRecord,
   type RouteAdapter,
   type RouteLine,
   ELK_PORT_SIDE,
@@ -162,6 +164,86 @@ function alignBridgePorts(laid: ElkNode, manualEdges: ManualEdge[]): boolean {
   return changed;
 }
 
+// An `auto` exit/enter side is decided BEFORE layout, from declaration order (see
+// resolveExitSide): whichever branch is written later is assumed to sit later in the
+// flow. ELK reorders siblings freely — a pool stack in particular — so that guess can
+// point a port at the wrong edge and send the line looping around the whole diagram.
+//
+// This corrects it once the real boxes exist: for each line, re-derive "is the target's
+// branch later than the source's" from the laid-out geometry, re-resolve the sides, and
+// rewrite everything they oriented — the ELK side of each auto port (pool ports and the
+// black-box chain ports alike) and each hand-drawn bridge's shape. The chain TOPOLOGY is
+// side-independent (planSide picks ports from the nesting, not the side), so nothing has
+// to be re-planned. The bridges are drawn by us and so are fixed up in place; the port
+// sides are RETURNED, because they have to be applied to a fresh copy of the graph (ELK
+// does not honour a side change on a graph it has already laid out — it keeps the old
+// placement and grows the node instead). An empty result means nothing moved.
+//
+// Explicitly routed sides (`route exit:`/`enter:`) and author-declared ports are pinned
+// in the records and never move; branches that end up level on the flow axis keep the
+// declaration-order answer (see laterFromGeometry).
+function reorientAutoSides(laid: ElkNode, records: AutoSideRecord[]): Map<string, Side> {
+  const moved = new Map<string, Side>();
+  if (records.length === 0) return moved;
+  const rects = new Map<string, AbsRect>();
+  const portPoints = new Map<string, { x: number; y: number }>();
+  for (const node of laid.children ?? []) collectAbsRects(node, 0, 0, rects, portPoints);
+
+  for (const r of records) {
+    // The branches whose boxes say where each end really landed. A port sitting ON the
+    // LCA has no branch, and two endpoints in the SAME branch give nothing to compare.
+    const srcBranch = branchUnderLca(r.sourceOwner, r.lca);
+    const tgtBranch = branchUnderLca(r.targetOwner, r.lca);
+    if (!srcBranch || !tgtBranch || srcBranch === tgtBranch) continue;
+    const srcRect = rects.get(srcBranch);
+    const tgtRect = rects.get(tgtBranch);
+    if (!srcRect || !tgtRect) continue;
+    const later = laterFromGeometry(r.lcaDir, srcRect, tgtRect);
+    if (later === undefined) continue;
+
+    const exitSide = resolveExitSide(
+      r.exit,
+      r.sourceOwner,
+      r.targetOwner,
+      r.lca,
+      r.lcaDir,
+      r.sourcePinned,
+      later,
+    );
+    const enterSide = resolveEnterSide(r.enter, exitSide, r.targetPinned);
+    if (exitSide !== r.exitSide) {
+      for (const id of r.exitPorts) moved.set(id, exitSide);
+      // A chain bridge lies wholly on one side, so both of its ends follow that side.
+      for (const b of r.exitBridges) {
+        b.exitSide = exitSide;
+        b.enterSide = exitSide;
+      }
+      if (r.joinBridge) r.joinBridge.exitSide = exitSide;
+      r.exitSide = exitSide;
+    }
+    if (enterSide !== r.enterSide) {
+      for (const id of r.enterPorts) moved.set(id, enterSide);
+      for (const b of r.enterBridges) {
+        b.exitSide = enterSide;
+        b.enterSide = enterSide;
+      }
+      if (r.joinBridge) r.joinBridge.enterSide = enterSide;
+      r.enterSide = enterSide;
+    }
+  }
+  return moved;
+}
+
+// Writes the corrected port sides onto a (not yet laid out) graph.
+function applyPortSides(node: ElkNode, sides: Map<string, Side>): void {
+  for (const port of (node as { ports?: { id: string; layoutOptions?: Record<string, string> }[] })
+    .ports ?? []) {
+    const side = sides.get(port.id);
+    if (side) (port.layoutOptions ??= {})['elk.port.side'] = ELK_PORT_SIDE[side];
+  }
+  for (const child of node.children ?? []) applyPortSides(child, sides);
+}
+
 // Renders straight to the DOM (elkjs computes geometry; we own the SVG). Mermaid
 // awaits an async draw, so we can await ELK's promise-based layout here.
 export const renderer = {
@@ -228,7 +310,13 @@ export const renderer = {
     // line) against the CURRENT build — both the pre-wrapper pass and the final routing
     // pass read the ctx maps as they stand at the time. A port endpoint resolves to its
     // ELK port and the container that owns it (which is what governs the LCA).
-    type Endpoint = { elk: string; owner: string; isPort: boolean; side?: Side };
+    type Endpoint = {
+      elk: string;
+      owner: string;
+      isPort: boolean;
+      side?: Side;
+      autoSide?: boolean;
+    };
     const resolveEndpointOf = (endpoint: Entity | string): Endpoint | null => {
       const entity = typeof endpoint === 'string' ? ctx.byName.get(endpoint) : endpoint;
       if (!entity) return null;
@@ -248,6 +336,8 @@ export const renderer = {
     // so multiple lines land at distinct points along the right edge. The endpoint then
     // behaves like a fixed anchor for routing (the other side chains to meet it). An
     // endpoint that is already a port has its own anchor and is left untouched.
+    // The side is a GUESS at this stage (it comes from declaration order); the endpoint is
+    // flagged `autoSide` so reorientAutoSides may re-pin it once the pools have landed.
     const poolPortEndpoint = (
       ref: Endpoint,
       connId: string,
@@ -265,7 +355,7 @@ export const renderer = {
         layoutOptions: { 'elk.port.side': ELK_PORT_SIDE[side] },
       });
       (pool.layoutOptions ??= {})['elk.portConstraints'] = 'FIXED_SIDE';
-      return { ...ref, elk: portId, isPort: true, side };
+      return { ...ref, elk: portId, isPort: true, side, autoSide: true };
     };
 
     // Build the ELK tree from the entities. Every id-keyed ctx map is rebuilt from
@@ -409,15 +499,16 @@ export const renderer = {
         if (d) ctx.dirById.set(`${nodeId}.0`, d);
       }
     }
-    // Whole-graph port line validation, decided up front so every connection can ask
-    // about itself.
-    const validation = analysePorts(entities, db.getLines());
     // Resolve each line to the agnostic RouteLine the layout engine consumes: its
     // endpoints, their LCA, and its resolved draw style. Every BPMN-specific decision
     // (endpoint resolution, pool ports, the message-flow / data-association look,
-    // validity, stroke) is made HERE, so the engine below stays diagram-agnostic.
+    // stroke) is made HERE, so the engine below stays diagram-agnostic.
     // Unresolvable lines are dropped with a warning.
     const routeLines: RouteLine[] = [];
+    // The pool ports minted below follow the same auto sides as the routing, but a
+    // pool-to-pool line is usually a PLAIN ELK edge, so the engine never plans it and
+    // cannot report it. Record them here instead (see reorientAutoSides).
+    const poolAutoSides: AutoSideRecord[] = [];
     db.getLines().forEach((line, i) => {
       const source = resolveEndpointOf(line.source);
       const target = resolveEndpointOf(line.target);
@@ -427,7 +518,6 @@ export const renderer = {
       }
       const lca = commonAncestorId(source.owner, target.owner);
       const connId = `conn${i}`;
-      const invalid = validation.isInvalidLine(line);
       // A line touching a data element or a text annotation is a data association:
       // dotted, with an open (line-only) arrowhead. This takes priority over the
       // message-flow look. The OWNER (not the endpoint entity) is tested so a line
@@ -437,21 +527,18 @@ export const renderer = {
         const t = ctx.types.get(owner);
         return t === 'data' || t === 'text';
       };
-      const dataAssoc =
-        !invalid && (touchesAnnotation(source.owner) || touchesAnnotation(target.owner));
+      const dataAssoc = touchesAnnotation(source.owner) || touchesAnnotation(target.owner);
       // A message flow crosses pool boundaries: its endpoints sit in different pools
       // (or one in none). Data associations are excluded above, so a data line keeps
       // the dotted look even across pools.
-      const messageFlow =
-        !invalid && !dataAssoc && poolOf(source.owner, ctx) !== poolOf(target.owner, ctx);
+      const messageFlow = !dataAssoc && poolOf(source.owner, ctx) !== poolOf(target.owner, ctx);
       const arrow = arrowFor(line.type);
       const style: ConnStyle = {
         arrow,
-        invalid,
         // BPMN routes its annotation lines like any other line (dotted, with an open
         // head — see `dataAssoc`), so the engine's straight-line path is never taken.
         text: false,
-        stroke: invalid ? undefined : lineStroke(line, lca, ctx, resolved),
+        stroke: lineStroke(line, lca, ctx, resolved),
         messageFlow,
         dataAssoc,
         // A leading `/` marks the source (start) end, a trailing `/` the target (end)
@@ -472,6 +559,25 @@ export const renderer = {
       const enterSide = resolveEnterSide(line.routing?.enter, exitSide);
       const srcRef = poolPortEndpoint(source, connId, 's', exitSide);
       const tgtRef = poolPortEndpoint(target, connId, 't', enterSide);
+      if (srcRef.autoSide || tgtRef.autoSide) {
+        poolAutoSides.push({
+          lca,
+          sourceOwner: source.owner,
+          targetOwner: target.owner,
+          lcaDir,
+          exit: line.routing?.exit,
+          enter: line.routing?.enter,
+          // An author-declared port pins its end; a minted pool port does not.
+          sourcePinned: srcRef.autoSide ? undefined : source.side,
+          targetPinned: tgtRef.autoSide ? undefined : target.side,
+          exitSide,
+          enterSide,
+          exitPorts: srcRef.autoSide ? [srcRef.elk] : [],
+          enterPorts: tgtRef.autoSide ? [tgtRef.elk] : [],
+          exitBridges: [],
+          enterBridges: [],
+        });
+      }
 
       routeLines.push({
         id: connId,
@@ -501,6 +607,7 @@ export const renderer = {
       manualEdges,
       straightEdges,
       debugSeparate,
+      autoSides,
     } = addConnections(graph, routeLines, adapter, rootLayoutDir, separate, { wrapped, wrappers });
     // INCLUDE_CHILDREN lets ELK route an edge across subtree boundaries, but it forces
     // one flow direction across that node's whole subtree. The engine set both sets
@@ -526,7 +633,25 @@ export const renderer = {
       if (r) resolvedById.set(nodeId, r);
     }
 
+    // Auto exit/enter sides were guessed from declaration order (see reorientAutoSides).
+    // Correcting one needs a graph ELK has NOT laid out yet, so keep a pristine copy —
+    // but only when there is an auto side that could move.
+    const autoSideRecords = [...poolAutoSides, ...autoSides];
+    const pristine = autoSideRecords.length > 0 ? structuredClone(graph) : undefined;
+
     let laid = await elk.layout(graph);
+    // Re-derive the auto sides from the real geometry and, if any moved, lay the pristine
+    // copy out with the corrected sides. This runs FIRST of the correction passes:
+    // equalisePoolLengths pins pool sizes and alignBridgePorts pins port positions, and
+    // both must read a layout whose shape is already final.
+    if (pristine) {
+      const moved = reorientAutoSides(laid, autoSideRecords);
+      if (moved.size > 0) {
+        applyPortSides(pristine, moved);
+        graph = pristine;
+        laid = await elk.layout(graph);
+      }
+    }
     // Pools that share a flow direction are stretched to a common length so a stack of
     // them lines up flush (like a pool's lanes). This needs the laid-out lengths, so it
     // runs after the first layout and, when it pins any pool, lays out once more — ELK
@@ -614,12 +739,11 @@ export const renderer = {
         if (from && to) {
           const points = orthogonalPoints(from, to, edge.bend, edge.exitSide, edge.enterSide);
           clip(points);
-          // Under the debug overlay, tint valid manual bridges blue so they read as
-          // hand-drawn among the ELK edges. Invalid lines keep their bold red.
-          const style =
-            drawCtx.debugPorts && !edge.style.invalid
-              ? { ...edge.style, stroke: DEBUG_MANUAL_STROKE }
-              : edge.style;
+          // Under the debug overlay, tint manual bridges blue so they read as
+          // hand-drawn among the ELK edges.
+          const style = drawCtx.debugPorts
+            ? { ...edge.style, stroke: DEBUG_MANUAL_STROKE }
+            : edge.style;
           drawEdgePolyline(svg, points, style, markers);
           if (edge.label) drawLineLabelNearSource(svg, points, edge.label);
         }

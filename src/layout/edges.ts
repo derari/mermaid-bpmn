@@ -42,10 +42,10 @@ export interface LabelableEdge {
   }[];
 }
 
-// How to draw one connection: its arrowhead end, whether it is invalid (bold red),
-// and its resolved stroke color (undefined = fall back to the theme line color via
-// CSS). The remaining flags are the drawn VARIANTS a diagram style may ask for; a
-// style that wants none simply leaves them unset.
+// How to draw one connection: its arrowhead end and its resolved stroke color
+// (undefined = fall back to the theme line color via CSS). The remaining flags are
+// the drawn VARIANTS a diagram style may ask for; a style that wants none simply
+// leaves them unset.
 //
 // `text` marks a line to a text annotation. It carries no look of its own — it gates
 // the ROUTING path (the engine draws such a line as one straight border-to-border
@@ -69,7 +69,6 @@ export interface LabelableEdge {
 // segment that touches each end (see applyManualRoute).
 export interface ConnStyle {
   arrow: ArrowEnd;
-  invalid: boolean;
   text: boolean;
   stroke?: string;
   messageFlow?: boolean;
@@ -127,14 +126,12 @@ interface LaidEdge {
   labels?: LaidEdgeLabel[];
 }
 
-// The line-end markers for one diagram. `valid` and `invalid` are the shared
-// CSS-colored defaults; the factories mint (and cache) a marker painted with a
-// specific stroke color, since a marker can't inherit the referencing line's
-// color cross-browser. All ids are scoped by the svg id so diagrams on one page
-// don't collide.
+// The line-end markers for one diagram. `valid` is the shared CSS-colored default;
+// the factories mint (and cache) a marker painted with a specific stroke color,
+// since a marker can't inherit the referencing line's color cross-browser. All ids
+// are scoped by the svg id so diagrams on one page don't collide.
 export interface Markers {
   valid: string;
-  invalid: string;
   forColor(color: string): string;
   // A message flow's hollow (background-filled, outlined) arrowhead and its open
   // origin circle. `color` overrides the outline (a line with an explicit stroke);
@@ -145,7 +142,7 @@ export interface Markers {
   dataArrow(color?: string): string;
 }
 
-// Creates the <defs>, the two default arrowhead markers, and the color/variant marker
+// Creates the <defs>, the default arrowhead marker, and the color/variant marker
 // factories. `theme` supplies the line and background colors the message markers paint
 // with (their fill is the background, their outline the line color) — these can't be
 // class-driven, since a hollow head must positively paint over whatever sits beneath it.
@@ -157,9 +154,7 @@ export function createMarkers(
   const defs = svgEl('defs', {});
   svg.appendChild(defs);
   const valid = `bpmn-arrow-${id}`;
-  const invalid = `bpmn-arrow-invalid-${id}`;
   defs.appendChild(arrowMarker(valid, 'bpmn-arrow'));
-  defs.appendChild(arrowMarker(invalid, 'bpmn-arrow bpmn-arrow-invalid'));
 
   let n = 0;
   // One per-color cache per factory, keyed by a prefix so the four never collide.
@@ -181,7 +176,6 @@ export function createMarkers(
   };
   return {
     valid,
-    invalid,
     forColor(color: string): string {
       return cached('c', color, (markerId) => {
         const marker = arrowMarker(markerId, 'bpmn-arrow');
@@ -269,28 +263,24 @@ export function drawEdgePolyline(
   style: ConnStyle,
   markers: Markers,
 ): void {
-  // Invalid wins (bold red, solid); then the data association (dotted) over the
-  // message flow (dashed); otherwise the plain edge.
-  const cls = style.invalid
-    ? 'bpmn-edge bpmn-edge-invalid'
-    : style.dataAssoc
-      ? 'bpmn-edge bpmn-data-assoc'
-      : style.messageFlow
-        ? 'bpmn-edge bpmn-message-flow'
-        : 'bpmn-edge';
+  // The data association (dotted) wins over the message flow (dashed); otherwise
+  // the plain edge.
+  const cls = style.dataAssoc
+    ? 'bpmn-edge bpmn-data-assoc'
+    : style.messageFlow
+      ? 'bpmn-edge bpmn-message-flow'
+      : 'bpmn-edge';
   const shaped = diagonalizeSteps(points, LINE_CORNER_RADIUS);
   const line = svgEl('path', { d: roundedPath(shaped, LINE_CORNER_RADIUS), class: cls });
   if (style.stroke) line.setAttribute('style', `stroke:${style.stroke}`);
 
-  const arrowId = style.invalid
-    ? markers.invalid
-    : style.dataAssoc
-      ? markers.dataArrow(style.stroke)
-      : style.messageFlow
-        ? markers.messageEnd(style.stroke)
-        : style.stroke
-          ? markers.forColor(style.stroke)
-          : markers.valid;
+  const arrowId = style.dataAssoc
+    ? markers.dataArrow(style.stroke)
+    : style.messageFlow
+      ? markers.messageEnd(style.stroke)
+      : style.stroke
+        ? markers.forColor(style.stroke)
+        : markers.valid;
   if (style.arrow === 'end') line.setAttribute('marker-end', `url(#${arrowId})`);
   if (style.arrow === 'start') line.setAttribute('marker-start', `url(#${arrowId})`);
 

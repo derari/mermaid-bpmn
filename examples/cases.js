@@ -660,6 +660,17 @@ export const cases = [
     port p w
   a -- p -- p1`,
   },
+  {
+    title: 'Port: ports on leaf entities (event, task) and curly on a task',
+    code: `bpmn
+  debug ports
+  start
+    port p1 s
+  task {
+    port p2 n
+  }
+  p1 --> p2`,
+  },
   // --- Layout: cross-boundary routing ---------------------------------------
   {
     title: 'Route: baseline mixed-direction cross line (no route keyword)',
@@ -779,6 +790,19 @@ export const cases = [
     route exit:s depth:2
   style Outer fill:#e3f2fd
   style Inner fill:#bbdefb`,
+  },
+  {
+    title: 'Route: auto sides follow the pool order ELK produced, not the declaration order',
+    code: `bpmn
+  debug ports
+  route depth:?
+  pool A
+  pool B
+  pool
+    lane
+      task C
+  B --> A
+  C --> A`,
   },
   {
     title: 'Route: entity-level route inherited by every line (exit + enter + depth)',

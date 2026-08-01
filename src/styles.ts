@@ -22,9 +22,9 @@ interface ThemeOptions {
 const pick = (value: string | number | undefined, fallback: string): string =>
   value !== undefined && value !== '' ? String(value) : fallback;
 
-// The invalid-line diagnostic is a fixed bold red by design: it must stand out
-// regardless of the active theme, so it is not theme-derived.
-const INVALID = '#ff0000';
+// The error diagnostic is a fixed bold red by design: it must stand out regardless
+// of the active theme, so it is not theme-derived.
+const ERROR_RED = '#ff0000';
 
 const styles = (options: ThemeOptions = {}): string => {
   const stroke = pick(options.nodeBorder ?? options.primaryBorderColor, '#333');
@@ -47,7 +47,7 @@ const styles = (options: ThemeOptions = {}): string => {
      drawn with an extra-bold red border so it stands out. It comes after the base
      \`.bpmn-entity\` rule so its equal-specificity stroke wins. */
   .bpmn-error {
-    stroke: ${INVALID};
+    stroke: ${ERROR_RED};
     stroke-width: 3px;
   }
   /* Every caption: on a node (\`bpmn-label\`) or along a connection
@@ -91,15 +91,6 @@ const styles = (options: ThemeOptions = {}): string => {
      "V" arrowhead is drawn as an inline-styled marker (see renderer). */
   .bpmn-data-assoc {
     stroke-dasharray: 2 4;
-  }
-  /* An invalid line (e.g. an arrowhead landing on a port) is bold red. These
-     rules come last so their equal-specificity selectors win over the base. */
-  .bpmn-edge-invalid {
-    stroke: ${INVALID};
-    stroke-width: 2.5px;
-  }
-  .bpmn-arrow-invalid {
-    fill: ${INVALID};
   }
 `;
 };

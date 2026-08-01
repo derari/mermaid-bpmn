@@ -442,14 +442,15 @@ describe('routing (real ELK)', () => {
     expect(ls.every((p) => p.attrs.class === 'bpmn-edge')).toBe(true);
   });
 
-  it('draws an arrowhead into a port as an invalid (red) edge', async () => {
-    // A port is a pass-through, not a destination, so a head landing on one is invalid.
+  it('draws an arrowhead into a port as an ordinary edge', async () => {
+    // Lines are not validated: a head landing on a port draws like any other line.
     await render(
       ['bpmn lr', '  task DB', '  subprocess Box', '    port In w', '  DB --> In'].join('\n'),
     );
     const ls = edges();
     expect(ls.length).toBe(1);
-    expect(ls[0].attrs.class).toBe('bpmn-edge bpmn-edge-invalid');
+    expect(ls[0].attrs.class).toBe('bpmn-edge');
+    expect(heads()).toBe(1);
   });
 
   it('draws declared ports green under the debug overlay', async () => {
@@ -1084,5 +1085,80 @@ describe('routing (real ELK)', () => {
     expect(hx).toBeCloseTo(bx, 0);
     expect(hy).toBeGreaterThanOrEqual(by - 0.5);
     expect(hy).toBeLessThanOrEqual(by + bh + 0.5);
+  });
+
+  it('routes a line between ports declared on two leaf entities', async () => {
+    // A port may hang off ANY entity, not just a container — an event and a task here.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  start',
+        '    port p1 s',
+        '  task {',
+        '    port p2 n',
+        '  }',
+        '  p1 --> p2',
+      ].join('\n'),
+    );
+    expect(edges()).toHaveLength(1);
+    expect(edges()[0].attrs.class).toBe('bpmn-edge');
+    expect(heads()).toBe(1);
+    // Both declared ports are drawn.
+    const declared = allRects().filter((r) => (r.attrs.class ?? '').includes('bpmn-port-declared'));
+    expect(declared).toHaveLength(2);
+  });
+
+  it('re-aims auto port sides at the pool order ELK produced, not the declaration order', async () => {
+    // A, B and an unnamed pool are declared in that order, but ELK stacks them B, pool, A.
+    // Without the post-layout correction the auto sides follow the DECLARATION order, so
+    // every port faces away from its partner and the lines loop around the diagram.
+    await render(
+      [
+        'bpmn',
+        '  debug ports',
+        '  route depth:?',
+        '  pool A',
+        '  pool B',
+        '  pool',
+        '    lane',
+        '      task C',
+        '  B --> A',
+        '  C --> A',
+      ].join('\n'),
+    );
+    const pools = allRects()
+      .filter((r) => (r.attrs.class ?? '').includes('bpmn-pool'))
+      .map((r) => ({
+        top: Number(r.attrs.y),
+        bottom: Number(r.attrs.y) + Number(r.attrs.height),
+      }))
+      .sort((a, b) => a.top - b.top);
+    expect(pools).toHaveLength(3);
+    const [top, mid, bottom] = pools;
+
+    // Router ports, by the edge they sit on.
+    const portYs = allRects()
+      .filter((r) => r.attrs.class === 'bpmn-port')
+      .map((r) => Number(r.attrs.y) + Number(r.attrs.height) / 2);
+    const on = (y: number): number => portYs.filter((p) => Math.abs(p - y) < 2).length;
+
+    // Everything flows downwards: the two upper pools exit south, the bottom pool (A) is
+    // entered twice from the north. Nothing sits on the far edges.
+    expect(on(top.bottom)).toBe(1);
+    expect(on(top.top)).toBe(0);
+    expect(on(mid.bottom)).toBe(2); // the pool's shell port and the lane's, stacked
+    expect(on(mid.top)).toBe(0);
+    expect(on(bottom.top)).toBe(2);
+    expect(on(bottom.bottom)).toBe(0);
+
+    // And no edge detours above or below the pool stack.
+    for (const p of edges()) {
+      const nums = (p.attrs.d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+      for (let i = 1; i < nums.length; i += 2) {
+        expect(nums[i]).toBeGreaterThanOrEqual(top.top - 1);
+        expect(nums[i]).toBeLessThanOrEqual(bottom.bottom + 1);
+      }
+    }
   });
 });

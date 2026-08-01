@@ -4,6 +4,32 @@ All notable changes to `mermaid-bpmn` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Ports on every entity.** A `port` is no longer restricted to containers and text
+  annotations: every entity family accepts one, so a task, call activity, gateway,
+  event, data object, or pool can carry ports too. As a consequence every entity
+  declaration except a `port` itself may now open a curly scope with a trailing `{`.
+  A port at the diagram root, and a port nested under another port, remain errors.
+
+### Removed
+
+- **Line validation.** Lines are no longer checked for validity, so nothing is drawn
+  bold red any more. In particular an arrowhead landing on a port is now an ordinary
+  line: `p1 --> p2` between two ports draws like any other flow. Parse errors keep
+  their red diagnostic node.
+
+### Fixed
+
+- **Automatic port sides now follow the real layout.** An `auto` exit/enter side was
+  derived from declaration order, but ELK reorders siblings freely — a stack of pools
+  especially — so ports could face away from the other endpoint and the line looped
+  around the whole diagram. The renderer now re-derives the side from the boxes ELK
+  actually produced and lays out again. Explicit `route exit:`/`enter:` sides and
+  author-declared ports are unaffected.
+
 ## [1.1.0] - 2026-07-30
 
 Diagram syntax gained a brace form, three new ways to write a gateway, and a call

@@ -100,6 +100,11 @@ export interface EndpointRef {
   owner: string;
   isPort: boolean;
   side?: Side;
+  // True when `side` was DERIVED (an auto port the style minted for this line, e.g.
+  // on a pool box) rather than declared by the author. Such a side is a pre-layout
+  // guess and may be re-derived from the real geometry afterwards; an author-declared
+  // port's side never moves. See reorientAutoSides in the renderer.
+  autoSide?: boolean;
 }
 
 // A line the engine routes, fully resolved by the diagram style: endpoints, their
@@ -125,6 +130,38 @@ export interface RouteAdapter {
   applyEdgeLabel(edge: LabelableEdge, text: string): void;
 }
 
+// Everything one line oriented by its `auto` exit/enter sides — the ports whose ELK
+// side follows each, and the hand-drawn bridges whose shape does. Both sides fall out
+// of a single "is the target's branch later than the source's" verdict, which before
+// layout is only declaration order; this record carries the inputs needed to re-derive
+// it from the laid-out boxes and rewrite everything that followed the old answer.
+// A side that was pinned — an explicit `route exit:`/`enter:`, or an author-declared
+// port — is recorded as such and never re-derived. See reorientAutoSides.
+export interface AutoSideRecord {
+  lca: string;
+  // The endpoints' OWNERS (a node, or a port's container), which is what the branch
+  // under the LCA — and hence the geometry comparison — is measured on.
+  sourceOwner: string;
+  targetOwner: string;
+  lcaDir: Direction;
+  exit: RouteSpec['exit'];
+  enter: RouteSpec['enter'];
+  // An AUTHOR-DECLARED port's side, which pins that end. Absent for a plain node and
+  // for a style-minted auto port (whose side is exactly what we may re-derive).
+  sourcePinned?: Side;
+  targetPinned?: Side;
+  // The sides as resolved in the first pass, so the correction can tell what changed.
+  exitSide: Side;
+  enterSide: Side;
+  exitPorts: string[]; // ELK port ids pinned to the exit side
+  enterPorts: string[]; // … to the enter side
+  // Chain bridges sit wholly on one side, so BOTH their exitSide and enterSide follow
+  // that side. The join bridge spans the two, taking one from each.
+  exitBridges: ManualEdge[];
+  enterBridges: ManualEdge[];
+  joinBridge?: ManualEdge;
+}
+
 // What the connection pass hands back: how to draw each ELK-routed edge (keyed by
 // edge id), the node ids that ended up with at least one such edge, the containers to
 // flatten (INCLUDE_CHILDREN) and to black-box (SEPARATE_CHILDREN), and the edges we
@@ -139,6 +176,8 @@ export interface Connections {
   // Every direction-boundary id to OUTLINE under the debug overlay (broader than the
   // explicitly SEPARATE_CHILDREN black-boxes). See addConnections.
   debugSeparate: Set<string>;
+  // Per manually-routed line, what followed its auto exit/enter sides (see above).
+  autoSides: AutoSideRecord[];
 }
 
 // Reconciles the flatten candidates to a maximal consistent set. Two flatten lines
@@ -218,6 +257,7 @@ export function addConnections(
   const blackBoxContainers = new Set<ElkNode>();
   const manualEdges: ManualEdge[] = [];
   const straightEdges: StraightEdge[] = [];
+  const autoSides: AutoSideRecord[] = [];
 
   const nodeOf = (id: string): ElkNode | undefined => (id === '' ? graph : adapter.nodeById(id));
 
@@ -330,7 +370,35 @@ export function addConnections(
     }
 
     if (plan.kind === 'manual') {
-      applyManualRoute(plan, style, adapter, container, styles, manualEdges, info.label);
+      const made = applyManualRoute(
+        plan,
+        style,
+        adapter,
+        container,
+        styles,
+        manualEdges,
+        info.label,
+      );
+      // Remember what this line's auto sides oriented, so the post-layout correction
+      // can re-derive them from the real geometry. A pool port's side is itself derived
+      // (autoSide), so it must NOT count as a pin — only an author-declared port does.
+      autoSides.push({
+        lca,
+        sourceOwner: source.owner,
+        targetOwner: target.owner,
+        lcaDir,
+        exit: info.routing?.exit,
+        enter: info.routing?.enter,
+        sourcePinned: source.autoSide ? undefined : source.side,
+        targetPinned: target.autoSide ? undefined : target.side,
+        exitSide: plan.exitSide,
+        enterSide: plan.enterSide,
+        exitPorts: plan.source.ports.map((p) => p.portId),
+        enterPorts: plan.target.ports.map((p) => p.portId),
+        exitBridges: made.exitBridges,
+        enterBridges: made.enterBridges,
+        joinBridge: made.joinBridge,
+      });
       continue;
     }
 
@@ -357,13 +425,15 @@ export function addConnections(
     manualEdges,
     straightEdges,
     debugSeparate,
+    autoSides,
   };
 }
 
 // Applies a `manual` RoutePlan to the ELK graph: creates each planned port on its
 // container (zero-size, FIXED_SIDE), adds each planned chain segment as an ELK edge,
 // then adds the ELK join edge in the LCA or records the hand-drawn bridge. planRoute
-// made every decision; this only mutates the graph.
+// made every decision; this only mutates the graph. Returns the ManualEdges it created,
+// split by which of the line's sides orients each, for the post-layout correction.
 function applyManualRoute(
   plan: { source: ChainPlan; target: ChainPlan; join: JoinPlan },
   style: ConnStyle,
@@ -372,7 +442,7 @@ function applyManualRoute(
   styles: Map<string, ConnStyle>,
   manualEdges: ManualEdge[],
   label: string | undefined,
-): void {
+): { exitBridges: ManualEdge[]; enterBridges: ManualEdge[]; joinBridge?: ManualEdge } {
   // The caption rides the ELK edge nearest the SOURCE (TAIL keeps it source-side): the
   // source chain's touch segment, else the ELK join, else the target chain's. A pure
   // bridge (none of those) carries the label itself (carrierId undefined).
@@ -406,7 +476,6 @@ function applyManualRoute(
   // The look every piece of this line shares (the variant and color), kept apart from the
   // per-piece decorations so a piece can never inherit an end mark that isn't its own.
   const shared = {
-    invalid: style.invalid,
     text: style.text,
     stroke: style.stroke,
     messageFlow: style.messageFlow,
@@ -455,18 +524,24 @@ function applyManualRoute(
   // Hand-drawn wrapper crossings within either chain (a black-box interior wrapper cannot
   // be ELK-routed across). Usually carries no head — but when the endpoint sits directly on
   // the wrapper's outer child, this bridge IS the side's touch element and planRoute has
-  // marked it accordingly (see the srcTouch/tgtTouch selection there).
-  for (const b of [...plan.source.bridges, ...plan.target.bridges]) {
-    manualEdges.push({
-      from: b.from,
-      to: b.to,
-      style: { arrow: b.arrow, ...shared, ...decorate(b) },
-      bend: b.bend,
-      exitSide: b.exitSide,
-      enterSide: b.enterSide,
-      label: undefined,
+  // marked it accordingly (see the srcTouch/tgtTouch selection there). A chain bridge lies
+  // wholly on its own side, so BOTH its sides follow that side's orientation.
+  const addChainBridges = (bridges: ChainPlan['bridges']): ManualEdge[] =>
+    bridges.map((b) => {
+      const edge: ManualEdge = {
+        from: b.from,
+        to: b.to,
+        style: { arrow: b.arrow, ...shared, ...decorate(b) },
+        bend: b.bend,
+        exitSide: b.exitSide,
+        enterSide: b.enterSide,
+        label: undefined,
+      };
+      manualEdges.push(edge);
+      return edge;
     });
-  }
+  const exitBridges = addChainBridges(plan.source.bridges);
+  const enterBridges = addChainBridges(plan.target.bridges);
 
   if (plan.join.kind === 'elk') {
     const edge: LabelableEdge & { sources: string[]; targets: string[] } = {
@@ -483,21 +558,24 @@ function applyManualRoute(
       slashStart: joinSlashStart,
       slashEnd: joinSlashEnd,
     });
-  } else {
-    manualEdges.push({
-      from: plan.join.from,
-      to: plan.join.to,
-      style: {
-        arrow: plan.join.arrow,
-        ...shared,
-        circle: joinCircle,
-        slashStart: joinSlashStart,
-        slashEnd: joinSlashEnd,
-      },
-      bend: plan.join.bend,
-      exitSide: plan.join.exitSide,
-      enterSide: plan.join.enterSide,
-      label: carrierId === undefined ? label : undefined,
-    });
+    return { exitBridges, enterBridges };
   }
+  // The join bridge spans the two sides, so it takes one field from each.
+  const joinBridge: ManualEdge = {
+    from: plan.join.from,
+    to: plan.join.to,
+    style: {
+      arrow: plan.join.arrow,
+      ...shared,
+      circle: joinCircle,
+      slashStart: joinSlashStart,
+      slashEnd: joinSlashEnd,
+    },
+    bend: plan.join.bend,
+    exitSide: plan.join.exitSide,
+    enterSide: plan.join.enterSide,
+    label: carrierId === undefined ? label : undefined,
+  };
+  manualEdges.push(joinBridge);
+  return { exitBridges, enterBridges, joinBridge };
 }

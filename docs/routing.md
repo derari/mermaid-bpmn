@@ -288,6 +288,39 @@ or — by default — at the boundary crossing itself. `exit`/`enter`/`bend` sha
 hand-drawn parts; `normalizeDirections` plus the per-container hierarchy guarantee every
 auto-port sits on a real black-box boundary.
 
+### Which side a line leaves from (`resolveExitSide` / `reorientAutoSides`)
+
+Every port a line plants, and every bridge it draws, is oriented by two sides: the **exit**
+side (the source end) and the **enter** side (the target end, opposite the exit unless it is
+given). The exit side is decided in order:
+
+1. an explicit `route exit:` — taken literally, even when it sends the line the long way
+   round;
+2. an **author-declared** `port`'s side — the line physically meets that edge, so its axis
+   is fixed regardless of the flow;
+3. **auto** — the *axis* comes from the LCA's flow direction (a `tb` LCA stacks its children
+   vertically, so a line to another branch leaves north or south), and the *sign* from
+   whether the target's branch sits later than the source's in that flow.
+
+That last comparison is the catch: **before layout there is no geometry**, so it falls back
+to declaration order. ELK reorders siblings freely — a stack of pools especially — so the
+guess can face away from the actual target and the line loops around the whole diagram.
+
+The renderer therefore lays out once, then **re-derives the comparison from the boxes ELK
+actually produced** (`reorientAutoSides`) and re-resolves both sides. Only genuinely `auto`
+sides move: an explicit `exit:`/`enter:` and an author-declared port stay pinned, and two
+branches that land level on the flow axis keep the declaration-order answer. Everything the
+side oriented is rewritten — each auto port's ELK side (pool ports and black-box chain ports
+alike) and each hand-drawn bridge's shape — and the layout is run again. The chain
+*topology* never depends on the side, so nothing is re-planned.
+
+> Two ELK notes make this a *re-layout of a fresh copy* rather than an in-place tweak: ELK
+> does not honour a port-side change on a graph it has already laid out (it keeps the old
+> placement and grows the node instead), so the corrected sides are transplanted onto a
+> pristine copy of the graph taken before the first layout. And this pass has to run
+> *before* `equalisePoolLengths` and `alignBridgePorts`, both of which pin geometry read off
+> a layout whose shape must already be final.
+
 ### Where the line's end decorations go
 
 A BPMN line may carry decorations that belong to one *geometric endpoint* each: a message

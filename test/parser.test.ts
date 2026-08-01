@@ -688,6 +688,33 @@ describe('bpmn parser', () => {
       expect(errorLabels().some((l) => /cannot contain a port/.test(l))).toBe(true);
     });
 
+    it('accepts a port under every entity family', () => {
+      parse(
+        'pool P',
+        '  port pp e',
+        '  lane L',
+        '    task T',
+        '      port tp n',
+        '    gate G',
+        '      port gp s',
+        '    data D',
+        '      port dp w',
+        '    start',
+        '      port ep e',
+      );
+      const [pool] = db.getEntities();
+      expect(pool.children[0]).toEqual({ name: 'pp', type: 'port', children: [], portSide: 'e' });
+      const lane = pool.children[1];
+      const sides = lane.children.map((c) => c.children.map((p) => p.portSide));
+      expect(sides).toEqual([['n'], ['s'], ['w'], ['e']]);
+      expect(errorLabels()).toEqual([]);
+    });
+
+    it('flags a port nested under another port as an error node', () => {
+      parse('lane L', '  port a e', '    port b n');
+      expect(errorLabels().some((l) => /a port cannot contain a port/.test(l))).toBe(true);
+    });
+
     it('flags a port without a trailing direction as an error node', () => {
       parse('lane L', '  port foo');
       expect(errorLabels().some((l) => /needs a trailing direction/.test(l))).toBe(true);
@@ -1221,9 +1248,16 @@ describe('bpmn parser', () => {
       expect(errorLabels().some((l) => /curly mode/.test(l))).toBe(true);
     });
 
-    it('flags a { after a non-container declaration as an error node', () => {
-      parse('gate g {', '}');
+    it('flags a { after a non-entity declaration as an error node', () => {
+      parse('{', '}');
       expect(errorLabels().some((l) => /container declaration/.test(l))).toBe(true);
+    });
+
+    it('opens a curly scope on a leaf entity so it can hold ports', () => {
+      parse('gate g {', 'port p e', '}');
+      const [gate] = db.getEntities();
+      expect(gate.type).toBe('gate');
+      expect(gate.children).toEqual([{ name: 'p', type: 'port', children: [], portSide: 'e' }]);
     });
 
     it('flags an unmatched closing brace as an error node', () => {

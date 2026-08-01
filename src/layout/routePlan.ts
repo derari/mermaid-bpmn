@@ -43,6 +43,16 @@ export function branchIndexUnderLca(id: string, lca: string): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
+// The id of the branch — the child of `lca` — on the dot-path to `id`, or '' when
+// `id` IS the lca (no branch to compare). The geometric counterpart of
+// branchIndexUnderLca: the box this id sits in, as laid out.
+export function branchUnderLca(id: string, lca: string): string {
+  if (id === lca) return '';
+  const segs = id.split('.');
+  const n = segCount(lca) + 1;
+  return n <= segs.length ? segs.slice(0, n).join('.') : id;
+}
+
 // The container ids a port chain runs through for an endpoint, innermost first:
 // the endpoint's direct container, then its parent, and so on for `count` levels.
 // `count` is expected pre-clamped to the nesting distance, so none is the LCA.
@@ -282,6 +292,48 @@ export function analyzeInterior(
 
 // ---- exit side -----------------------------------------------------------
 
+// The AXIS of an `auto` side comes from the LCA's flow direction, and its SIGN from
+// `later` — whether the target's branch sits further along that flow than the
+// source's. TB and LR run with increasing screen coordinates; BT and RL against them.
+export function sideFromFlow(lcaDir: Direction, later: boolean): Side {
+  if (lcaDir === 'TB' || lcaDir === 'BT') {
+    return (lcaDir === 'TB' ? later : !later) ? 's' : 'n';
+  }
+  return (lcaDir === 'LR' ? later : !later) ? 'e' : 'w';
+}
+
+// A laid-out box, in absolute coordinates (the renderer's AbsRect satisfies this).
+export interface LaidRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Two branch boxes count as "aligned" — neither later than the other — when their
+// centres sit within this many pixels on the flow axis. Side-by-side branches (a
+// cross-flow line) then keep whatever declaration order decided, rather than
+// flipping on sub-pixel noise.
+const FLOW_ALIGN_TOLERANCE = 1;
+
+// Is the TARGET branch later than the SOURCE branch along the LCA's flow, judged by
+// the actual laid-out boxes? Returns undefined when the two sit level on that axis
+// (see FLOW_ALIGN_TOLERANCE), so the caller keeps its declaration-order answer.
+// This is the geometric replacement for branchIndexUnderLca: ELK reorders siblings
+// freely, so declaration order is only ever a pre-layout guess.
+export function laterFromGeometry(
+  lcaDir: Direction,
+  source: LaidRect,
+  target: LaidRect,
+): boolean | undefined {
+  const vertical = lcaDir === 'TB' || lcaDir === 'BT';
+  const src = vertical ? source.y + source.h / 2 : source.x + source.w / 2;
+  const tgt = vertical ? target.y + target.h / 2 : target.x + target.w / 2;
+  const delta = tgt - src;
+  if (Math.abs(delta) <= FLOW_ALIGN_TOLERANCE) return undefined;
+  return lcaDir === 'TB' || lcaDir === 'LR' ? delta > 0 : delta < 0;
+}
+
 // The side of the source's container the line should leave from. An explicit
 // side wins literally (even against the geometry — the line then loops around).
 // A declared `port` endpoint pins the side next: the line physically meets that
@@ -290,7 +342,9 @@ export function analyzeInterior(
 // flow. Otherwise `auto` takes its AXIS from the LCA's flow direction — a
 // vertically-flowing LCA stacks its children top to bottom, so a line to another
 // branch leaves north/south — and its SIGN from whether the target's branch sits
-// later than the source's in that flow.
+// later than the source's in that flow. That last comparison is declaration order
+// before layout; `later` lets the post-layout correction supply the real one
+// (see reorientAutoSides in the renderer).
 export function resolveExitSide(
   exit: RouteSpec['exit'],
   sourceId: string,
@@ -298,14 +352,14 @@ export function resolveExitSide(
   lca: string,
   lcaDir: Direction,
   portSide?: Side,
+  later?: boolean,
 ): Side {
   if (exit && exit !== 'auto') return exit;
   if (portSide) return portSide;
-  const later = branchIndexUnderLca(targetId, lca) > branchIndexUnderLca(sourceId, lca);
-  if (lcaDir === 'TB' || lcaDir === 'BT') {
-    return (lcaDir === 'TB' ? later : !later) ? 's' : 'n';
-  }
-  return (lcaDir === 'LR' ? later : !later) ? 'e' : 'w';
+  return sideFromFlow(
+    lcaDir,
+    later ?? branchIndexUnderLca(targetId, lca) > branchIndexUnderLca(sourceId, lca),
+  );
 }
 
 // The side of the target's container the line enters on. An explicit side wins
@@ -395,7 +449,17 @@ export type JoinPlan =
 export type RoutePlan =
   | { kind: 'plain'; warnRoute: boolean }
   | { kind: 'flatten'; container: string; blackBox: string[] }
-  | { kind: 'manual'; source: ChainPlan; target: ChainPlan; join: JoinPlan };
+  | {
+      kind: 'manual';
+      source: ChainPlan;
+      target: ChainPlan;
+      join: JoinPlan;
+      // The sides every port and bridge above was oriented by. Reported so the
+      // renderer can tell whether a post-layout re-resolution changed anything
+      // (see reorientAutoSides).
+      exitSide: Side;
+      enterSide: Side;
+    };
 
 export interface RouteInput {
   // The ELK anchor an edge attaches to: a node id, or — for a declared `port`
@@ -690,5 +754,5 @@ export function planRoute(input: RouteInput): RoutePlan {
       ? { kind: 'elk', id: `${connId}j`, from: source.endpoint, to: target.endpoint, container: lca, arrow: joinArrow }
       : { kind: 'bridge', from: source.anchor, to: target.anchor, arrow: joinArrow, bend, exitSide, enterSide };
 
-  return { kind: 'manual', source, target, join };
+  return { kind: 'manual', source, target, join, exitSide, enterSide };
 }

@@ -4,13 +4,16 @@ import {
   type DirNode,
   analyzeFlatten,
   branchIndexUnderLca,
+  branchUnderLca,
   enclosingContainers,
+  laterFromGeometry,
   normalizeDirections,
   parentId,
   planRoute,
   resolveEnterSide,
   resolveExitSide,
   segCount,
+  sideFromFlow,
 } from '../src/layout/routePlan.js';
 
 describe('routePlan helpers', () => {
@@ -50,6 +53,51 @@ describe('routePlan helpers', () => {
     });
   });
 
+  describe('branchUnderLca', () => {
+    it('names the lca child the endpoint sits under', () => {
+      expect(branchUnderLca('n2.1', '')).toBe('n2');
+      expect(branchUnderLca('n0.3.1', 'n0')).toBe('n0.3');
+      expect(branchUnderLca('n0.3', 'n0')).toBe('n0.3'); // direct child is its own branch
+    });
+
+    it('returns "" for the lca itself (a port on the lca has no branch)', () => {
+      expect(branchUnderLca('n0', 'n0')).toBe('');
+      expect(branchUnderLca('', '')).toBe('');
+    });
+  });
+
+  describe('sideFromFlow', () => {
+    it('takes the axis from the direction and the sign from later', () => {
+      expect(sideFromFlow('TB', true)).toBe('s');
+      expect(sideFromFlow('TB', false)).toBe('n');
+      expect(sideFromFlow('BT', true)).toBe('n');
+      expect(sideFromFlow('LR', true)).toBe('e');
+      expect(sideFromFlow('LR', false)).toBe('w');
+      expect(sideFromFlow('RL', true)).toBe('w');
+    });
+  });
+
+  describe('laterFromGeometry', () => {
+    const at = (x: number, y: number) => ({ x, y, w: 10, h: 10 });
+
+    it('compares box centres on the flow axis', () => {
+      expect(laterFromGeometry('TB', at(0, 0), at(0, 100))).toBe(true);
+      expect(laterFromGeometry('TB', at(0, 100), at(0, 0))).toBe(false);
+      expect(laterFromGeometry('BT', at(0, 0), at(0, 100))).toBe(false);
+      expect(laterFromGeometry('LR', at(0, 0), at(100, 0))).toBe(true);
+      expect(laterFromGeometry('RL', at(0, 0), at(100, 0))).toBe(false);
+    });
+
+    it('ignores the cross axis', () => {
+      expect(laterFromGeometry('TB', at(500, 0), at(0, 100))).toBe(true);
+    });
+
+    it('gives up when the branches sit level, so declaration order stands', () => {
+      expect(laterFromGeometry('TB', at(0, 40), at(300, 40))).toBeUndefined();
+      expect(laterFromGeometry('LR', at(40, 0), at(40.5, 300))).toBeUndefined();
+    });
+  });
+
   describe('resolveExitSide', () => {
     it('honors an explicit side literally', () => {
       expect(resolveExitSide('n', 'n0.0', 'n1.0', '', 'LR')).toBe('n');
@@ -70,6 +118,18 @@ describe('routePlan helpers', () => {
       expect(resolveExitSide('auto', 'n0.0', 'n1.0', '', 'LR')).toBe('e');
       expect(resolveExitSide('auto', 'n1.0', 'n0.0', '', 'LR')).toBe('w');
       expect(resolveExitSide('auto', 'n0.0', 'n1.0', '', 'RL')).toBe('w');
+    });
+
+    it('auto: a supplied later overrides the declaration-order comparison', () => {
+      // n1 is declared after n0, but ELK put its box first: south becomes north.
+      expect(resolveExitSide('auto', 'n0.0', 'n1.0', '', 'TB', undefined, false)).toBe('n');
+      expect(resolveExitSide('auto', 'n1.0', 'n0.0', '', 'TB', undefined, true)).toBe('s');
+      expect(resolveExitSide('auto', 'n0.0', 'n1.0', '', 'LR', undefined, false)).toBe('w');
+    });
+
+    it('a declared port side still outranks the geometry', () => {
+      expect(resolveExitSide('auto', 'n0.0', 'n1.0', '', 'TB', 'e', false)).toBe('e');
+      expect(resolveExitSide('n', 'n0.0', 'n1.0', '', 'TB', undefined, true)).toBe('n');
     });
   });
 
