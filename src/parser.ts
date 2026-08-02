@@ -31,6 +31,9 @@ import {
 
 const HEADER_RE = /^bpmn(?:\s+(\S+))?$/;
 const DIRECTION_RE = /^direction\s+(\S+)$/;
+// `layout <algorithm>` — a root-only directive that sets the layout algorithm.
+// "elk" is the only supported algorithm and is also the default.
+const LAYOUT_RE = /^layout\s+(\S+)$/;
 // `auto-sequence <on|off>` — toggles auto-sequencing for the container it is
 // nested under (the diagram root at the top level). A bare `auto-sequence` turns
 // it on. The value is inherited by descendants; the root default is off.
@@ -1303,6 +1306,18 @@ export const parser = {
           console.warn(`bpmn: "debug ports" is only allowed at the diagram root ("${line}")`);
         } else {
           db.setDebugPorts(true);
+        }
+        continue;
+      }
+
+      // `layout <algorithm>` sets the layout algorithm. It only makes sense at the
+      // diagram root (directly under `bpmn`); nested it is dropped with a warning.
+      const layout = LAYOUT_RE.exec(line);
+      if (layout) {
+        if (parent !== root) {
+          console.warn(`bpmn: "layout" is only allowed at the diagram root ("${line}")`);
+        } else {
+          db.setLayoutAlgorithm(layout[1]);
         }
         continue;
       }

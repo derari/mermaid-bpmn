@@ -51,6 +51,88 @@ export function captionHeight(caption: string, lineH: number = LABEL_LINE_H): nu
   return captionLines(caption).length * lineH;
 }
 
+const ELLIPSIS = '…';
+
+// Cuts `text` down until it plus an ellipsis fits `maxWidth`. The ellipsis is
+// always appended, so a caption that lost content always says so.
+function ellipsize(text: string, maxWidth: number, measure: Measure, className?: string): string {
+  let cut = text;
+  while (cut.length > 0 && measure(cut + ELLIPSIS, className) > maxWidth) cut = cut.slice(0, -1);
+  return cut.trimEnd() + ELLIPSIS;
+}
+
+// Splits a single word that is too wide for the box into the widest pieces that
+// each fit. Always makes progress: a piece is at least one character, even if
+// that character alone overflows.
+function breakWord(word: string, maxWidth: number, measure: Measure, className?: string): string[] {
+  const pieces: string[] = [];
+  let rest = word;
+  while (rest.length > 0) {
+    let take = 1;
+    while (take < rest.length && measure(rest.slice(0, take + 1), className) <= maxWidth) take++;
+    pieces.push(rest.slice(0, take));
+    rest = rest.slice(take);
+  }
+  return pieces;
+}
+
+// Greedily fills lines with whole words, breaking a word only when it does not
+// fit a line of its own.
+function wrapWords(text: string, maxWidth: number, measure: Measure, className?: string): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [''];
+
+  const lines: string[] = [];
+  let current = '';
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (measure(candidate, className) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines.push(current);
+    if (measure(word, className) <= maxWidth) {
+      current = word;
+      continue;
+    }
+    const pieces = breakWord(word, maxWidth, measure, className);
+    lines.push(...pieces.slice(0, -1));
+    current = pieces[pieces.length - 1];
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+/**
+ * Fits a caption into a box of a given width by wrapping it, and into a given
+ * number of lines by truncating the last one with an ellipsis.
+ *
+ * The ELK path grows a box around its caption; a layout that sizes shapes on its
+ * own cannot do that, so there the caption has to give way instead. Explicit
+ * line breaks in the caption are kept: each of its lines is wrapped on its own.
+ * Returns the caption unchanged when there is nothing sensible to fit it into.
+ */
+export function wrapCaption(
+  caption: string,
+  maxWidth: number,
+  measure: Measure,
+  maxLines = Number.POSITIVE_INFINITY,
+  className?: string,
+): string {
+  if (!caption || maxWidth <= 0 || maxLines < 1) return caption;
+
+  const lines: string[] = [];
+  for (const paragraph of captionLines(caption)) {
+    lines.push(...wrapWords(paragraph, maxWidth, measure, className));
+    if (lines.length > maxLines) break;
+  }
+
+  if (lines.length <= maxLines) return lines.join('\n');
+  const kept = lines.slice(0, maxLines);
+  kept[kept.length - 1] = ellipsize(kept[kept.length - 1], maxWidth, measure, className);
+  return kept.join('\n');
+}
+
 // A caption drawn on (`x`, `cy`), one <tspan> per line for a multi-line label so it
 // reads as stacked, vertically centred rows. A single line stays a plain <text>
 // (its `dominant-baseline: central` centres it), so nothing about the common case

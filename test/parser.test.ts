@@ -1172,6 +1172,56 @@ describe('bpmn parser', () => {
       expect(warn).toHaveBeenCalled();
       warn.mockRestore();
     });
+
+    it('sets the layout algorithm at the root', () => {
+      parse('layout elk');
+      expect(db.getLayoutAlgorithm()).toBe('elk');
+    });
+
+    it('defaults to elk when layout is not specified', () => {
+      parse('task T');
+      expect(db.getLayoutAlgorithm()).toBe('elk');
+    });
+
+    it('warns and ignores layout when nested', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      parse('pool P', '  layout elk');
+      expect(db.getLayoutAlgorithm()).toBe('elk');
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('accepts "auto" as a layout algorithm', () => {
+      parse('layout auto');
+      expect(db.getLayoutAlgorithm()).toBe('auto');
+    });
+
+    it('warns on unsupported layout algorithm and keeps default', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      parse('layout unknown');
+      expect(db.getLayoutAlgorithm()).toBe('elk');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('unsupported layout algorithm'),
+      );
+      warn.mockRestore();
+    });
+
+    // `layout` is a standalone command: it is only recognised as a line of its
+    // own at the diagram root, never as part of another statement.
+    it('does not recognise layout on the diagram header line', () => {
+      parser.parse('bpmn layout auto\n  task T');
+      expect(db.getLayoutAlgorithm()).toBe('elk');
+    });
+
+    it('does not recognise layout appended to another command', () => {
+      parse('task T layout auto');
+      expect(db.getLayoutAlgorithm()).toBe('elk');
+    });
+
+    it('does not recognise layout with trailing arguments', () => {
+      parse('layout auto please');
+      expect(db.getLayoutAlgorithm()).toBe('elk');
+    });
   });
 
   describe('curly mode', () => {

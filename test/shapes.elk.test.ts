@@ -101,7 +101,7 @@ describe('BPMN shapes (real ELK)', () => {
     svg.children.filter((e) => e.nodeName === 'rect' && e.attrs.class?.includes(cls));
 
   it('renders an empty horizontal pool as a sharp-cornered fixed-size box', async () => {
-    await render('bpmn LR\n  pool "Orders"');
+    await render('bpmn LR\n  layout elk\n  pool "Orders"');
     const [pool] = findRect('bpmn-pool');
     expect(pool).toBeDefined();
     // Carries the common entity outline, and is not a container (a leaf, no lanes).
@@ -115,7 +115,7 @@ describe('BPMN shapes (real ELK)', () => {
   });
 
   it('swaps the empty pool dimensions for a vertical flow', async () => {
-    await render('bpmn TB\n  pool "Orders"');
+    await render('bpmn TB\n  layout elk\n  pool "Orders"');
     const [pool] = findRect('bpmn-pool');
     expect(Number(pool.attrs.width)).toBe(88);
     expect(Number(pool.attrs.height)).toBe(640);
@@ -128,7 +128,7 @@ describe('BPMN shapes (real ELK)', () => {
     // the tasks below it: both ports should land on P's SOUTH edge (facing the
     // tasks), at distinct points along it rather than stacked.
     await render(
-      ['bpmn LR', '  debug ports', '  pool P', '  task A', '  task B', '  A --> P', '  B --> P'].join('\n'),
+      ['bpmn LR', '  layout elk', '  debug ports', '  pool P', '  task A', '  task B', '  A --> P', '  B --> P'].join('\n'),
     );
     const [pool] = findRect('bpmn-pool');
     const poolBottom = Number(pool.attrs.y) + Number(pool.attrs.height);
@@ -146,7 +146,7 @@ describe('BPMN shapes (real ELK)', () => {
 
   it('renders a pool with lanes: a pool box plus a stretched lane box per lane', async () => {
     await render(
-      ['bpmn LR', '  pool P', '    lane A', '    lane B'].join('\n'),
+      ['bpmn LR', '  layout elk', '  pool P', '    lane A', '    lane B'].join('\n'),
     );
     const [pool] = findRect('bpmn-pool');
     const lanes = findRect('bpmn-lane');
@@ -169,6 +169,7 @@ describe('BPMN shapes (real ELK)', () => {
     await render(
       [
         'bpmn TB',
+        '  layout elk',
         '  pool A LR',
         '    lane Bobs Lane',
         '      manual task Bob',
@@ -193,7 +194,7 @@ describe('BPMN shapes (real ELK)', () => {
   it('stacks root pools ACROSS the diagram flow (LR diagram → pools top-to-bottom)', async () => {
     // A root holding pools toggles its layout axis (LR → TB), so the two pools stack
     // vertically — the classic swimlane arrangement — sharing x and differing in y.
-    await render(['bpmn LR', '  pool A', '    lane LA', '  pool B', '    lane LB'].join('\n'));
+    await render(['bpmn LR', '  layout elk', '  pool A', '    lane LA', '  pool B', '    lane LB'].join('\n'));
     const pools = findRect('bpmn-pool');
     expect(pools.length).toBe(2);
     expect(Number(pools[0].attrs.x)).toBe(Number(pools[1].attrs.x));
@@ -202,7 +203,7 @@ describe('BPMN shapes (real ELK)', () => {
 
   it('toggles the root layout axis for a vertical diagram (TB → pools side by side)', async () => {
     // TB toggles to an LR root layout: the pools sit side by side (share y, differ in x).
-    await render(['bpmn TB', '  pool A', '    lane LA', '  pool B', '    lane LB'].join('\n'));
+    await render(['bpmn TB', '  layout elk', '  pool A', '    lane LA', '  pool B', '    lane LB'].join('\n'));
     const pools = findRect('bpmn-pool');
     expect(pools.length).toBe(2);
     expect(Number(pools[0].attrs.y)).toBe(Number(pools[1].attrs.y));
@@ -216,6 +217,7 @@ describe('BPMN shapes (real ELK)', () => {
     await render(
       [
         'bpmn',
+        '  layout elk',
         '  pool P1',
         '  pool',
         '    lane',
@@ -238,6 +240,7 @@ describe('BPMN shapes (real ELK)', () => {
     await render(
       [
         'bpmn LR',
+        '  layout elk',
         '  pool Long',
         '    lane L1',
         '      task A',
@@ -265,6 +268,7 @@ describe('BPMN shapes (real ELK)', () => {
     await render(
       [
         'bpmn LR',
+        '  layout elk',
         '  pool H1 LR',
         '    lane a',
         '      task A',
@@ -294,7 +298,7 @@ describe('BPMN shapes (real ELK)', () => {
     // The pool→lane toggle preserves the sign: an RL pool stacks its lanes along BT,
     // so they still stack vertically but the first-declared lane sits at the BOTTOM
     // (the old sign-losing map put it on top).
-    await render(['bpmn', '  pool P RL', '    lane LA', '    lane LB'].join('\n'));
+    await render(['bpmn', '  layout elk', '  pool P RL', '    lane LA', '    lane LB'].join('\n'));
     const lanes = findRect('bpmn-lane');
     expect(lanes.length).toBe(2);
     expect(Number(lanes[0].attrs.x)).toBe(Number(lanes[1].attrs.x)); // vertical stack
@@ -305,6 +309,7 @@ describe('BPMN shapes (real ELK)', () => {
     await render(
       [
         'bpmn TB',
+        '  layout elk',
         '  pool A LR',
         '    lane Bobs Lane',
         '      manual task Bob',
@@ -335,6 +340,7 @@ describe('BPMN shapes (real ELK)', () => {
     await render(
       [
         'bpmn LR',
+        '  layout elk',
         '  pool A LR',
         '    lane L',
         '      task X',
@@ -377,6 +383,7 @@ describe('BPMN shapes (real ELK)', () => {
     await render(
       [
         'bpmn TB',
+        '  layout elk',
         '  pool A LR',
         '    lane L',
         '      task Bob',

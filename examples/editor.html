@@ -115,6 +115,13 @@
       .download-menu button:hover {
         background: var(--border-faint);
       }
+      .download-menu button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .download-menu button:disabled:hover {
+        background: transparent;
+      }
       main {
         flex: 1;
         display: flex;
@@ -184,6 +191,7 @@
         <ul id="download-menu" class="download-menu" hidden>
           <li><button id="download-svg" type="button">SVG</button></li>
           <li><button id="download-png" type="button">PNG</button></li>
+          <li><button id="download-bpmn" type="button">BPMN</button></li>
         </ul>
       </div>
       <button id="theme-toggle" class="theme-toggle" type="button">🌙 Dark</button>
@@ -201,7 +209,7 @@
 
     <script type="module">
       import mermaid from 'mermaid';
-      import bpmn, { registerIconPacks } from '../src/index.ts';
+      import bpmn, { registerIconPacks, getLastBpmnXml } from '../src/index.ts';
 
       mermaid.registerExternalDiagrams([bpmn]);
       // Icons: register the Iconify packs the `icon:` style prop can draw from.
@@ -255,8 +263,11 @@
   classDef bg-lane fill:#ECECFF
   classDef important fill:#FFE2D8
 
+  # choose layout algorithm: 'elk' (default) or 'auto'
+  # layout auto
+
   # declare entities with
-  # [entity type] [id?] ["label"?] [:::class?]
+  # [entity type] [id?] ["label"?] [:::style-class?]
   pool P1 "Pool (Black Box)" :::bg-pool
 
   # for most entities, label defaults to id
@@ -383,15 +394,20 @@
       source.value = EXAMPLE;
 
       let seq = 0;
+      let lastRenderOk = false;
       async function render() {
         const id = `bpmn-editor-${seq++}`;
         try {
           const { svg } = await mermaid.render(id, source.value);
           output.innerHTML = svg;
+          lastRenderOk = true;
         } catch (err) {
           output.innerHTML = `<div class="error">${String(
             err && err.stack ? err.stack : err,
           )}</div>`;
+          // The source never reached the renderer, so whatever BPMN is held from
+          // the last good render describes a different diagram.
+          lastRenderOk = false;
         }
       }
 
@@ -416,8 +432,10 @@
       }
       toggle.addEventListener('click', () => setTheme(theme === 'dark' ? 'light' : 'dark'));
 
-      // Download: the button drops down to SVG / PNG. Both work off whatever SVG
-      // is currently in the output pane, so a diagram must be rendered first.
+      // Download: the button drops down to SVG / PNG / BPMN. SVG and PNG work off
+      // whatever SVG is currently in the output pane, so a diagram must be
+      // rendered first. BPMN comes from the layouter instead, and only the `auto`
+      // layout produces one.
       const downloadToggle = document.getElementById('download-toggle');
       const downloadMenu = document.getElementById('download-menu');
 
@@ -519,6 +537,18 @@
         img.src = svgUrl;
       }
 
+      // The layouted BPMN 2.0 document: what the diagram was actually drawn from,
+      // with the shape bounds and edge waypoints bpmn-auto-layout produced, so it
+      // opens in a BPMN modeller looking the way it looks here.
+      function downloadBpmn() {
+        const xml = getLastBpmnXml();
+        if (!xml) {
+          alert('Requires `layout auto`');
+          return;
+        }
+        triggerDownload(new Blob([xml], { type: 'application/xml;charset=utf-8' }), 'diagram.bpmn');
+      }
+
       document.getElementById('download-svg').addEventListener('click', () => {
         openMenu(false);
         downloadSvg();
@@ -526,6 +556,10 @@
       document.getElementById('download-png').addEventListener('click', () => {
         openMenu(false);
         downloadPng();
+      });
+      document.getElementById('download-bpmn').addEventListener('click', () => {
+        openMenu(false);
+        downloadBpmn();
       });
 
       setTheme('light');

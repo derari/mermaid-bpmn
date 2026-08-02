@@ -305,6 +305,9 @@ let lines: Line[] = [];
 // otherwise-invisible routing ports as small red squares. Off by default. This is
 // a diagram-level toggle, not an entity property, so it stays a plain flag.
 let debugPorts = false;
+// The layout algorithm (set via root-only `layout <algorithm>` directive).
+// "elk" is the default. "auto" (no layout, all nodes at origin) is also supported.
+let layoutAlgorithm: string = 'elk';
 // Named style bags from `classDef`, style set on entities by name via
 // `style <name> …`, and class assignments from `class <names> <class>`. All are
 // resolved against the entity tree at render time.
@@ -332,6 +335,7 @@ export const db = {
     root = makeRoot();
     lines = [];
     debugPorts = false;
+    layoutAlgorithm = 'elk';
     classDefs = new Map();
     namedStyles = new Map();
     namedClasses = new Map();
@@ -437,6 +441,23 @@ export const db = {
 
   getDebugPorts(): boolean {
     return debugPorts;
+  },
+
+  // Sets the layout algorithm (root-only directive).
+  // Supported algorithms: "elk" (default), "auto" (no layout, all nodes at origin).
+  setLayoutAlgorithm(algorithm: string): void {
+    const supported = ['elk', 'auto'];
+    if (!supported.includes(algorithm)) {
+      console.warn(
+        `bpmn: unsupported layout algorithm "${algorithm}"; using default "elk"`,
+      );
+      return;
+    }
+    layoutAlgorithm = algorithm;
+  },
+
+  getLayoutAlgorithm(): string {
+    return layoutAlgorithm;
   },
 
   // Accessibility / title hooks Mermaid may call on any db. No-ops for now.

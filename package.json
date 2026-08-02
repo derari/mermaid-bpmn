@@ -68,6 +68,8 @@
   },
   "dependencies": {
     "@iconify/utils": "^3.1.4",
+    "bpmn-auto-layout": "2.0.0-alpha.2",
+    "bpmn-moddle": "^10.1.0",
     "elkjs": "^0.12.0"
   }
 }

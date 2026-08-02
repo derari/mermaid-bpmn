@@ -1,6 +1,7 @@
 import ELK, { type ElkNode } from 'elkjs/lib/elk.bundled.js';
-import { type Direction, type Entity, type Line, type Side, db } from './db.js';
+import { type Direction, type Entity, type Line, type Side, db, entityLabel } from './db.js';
 import { resolveBoundaryAutoSides } from './boundarySides.js';
+import { setLastBpmnXml } from './lastBpmn.js';
 import { commonAncestorId } from './geometry.js';
 import {
   type Anchor,
@@ -16,7 +17,13 @@ import { type Resolved, resolveStyles } from './styleModel.js';
 import { type IconSvg, resolveIcons } from './icons.js';
 import { renderTheme } from './theme.js';
 import { type AbsRect, orthogonalPoints } from './layout/geometry.js';
-import { makeMeasurer } from './layout/text.js';
+import {
+  makeMeasurer,
+  LABEL_LINE_H,
+  captionHeight,
+  measureCaption,
+  wrapCaption,
+} from './layout/text.js';
 import {
   type ConnStyle,
   type ManualEdge,
@@ -38,23 +45,32 @@ import {
   containerOptions,
   pruneOrderingEdges,
 } from './layout/elk.js';
+import { AUTO_PADDING, autoLayout } from './layout/auto.js';
 import {
   type BuildCtx,
   CONTAINER_PAD,
   DEBUG_MANUAL_STROKE,
   type DrawCtx,
   EVENT_SIZE,
+  ICON_GAP,
+  ICON_SIZE,
+  LABEL_PAD_X,
   LEAF_H,
   LEAF_MIN_W,
+  MARKER_BAND,
   NODE_SPACING,
+  OUTSIDE_LABEL_GAP,
+  POOL_LABEL_BAND,
   SUPPORTED_TYPES,
   TOGGLE_AXIS,
+  activityMarkerSpecs,
   applyEdgeLabel,
   collectLineEntities,
   drawBoundaryEvent,
   drawNode,
   equalisePoolLengths,
   gateClipper,
+  iconPx,
   lineStroke,
   poolOf,
   regionsFirst,
@@ -62,10 +78,7 @@ import {
   toElkNode,
 } from './bpmnStyle.js';
 
-
 const elk = new ELK();
-
-
 
 function arrowFor(type: Line['type']): ArrowEnd {
   if (type === '-->') return 'end';
@@ -97,6 +110,13 @@ function describeLine(line: Line): string {
 // moves (the author pinned them). It pins the moved port's container to FIXED_POS — every
 // port already has a laid-out position, so the rest stay put — and signals a re-layout.
 const ALIGN_BRIDGE_PORTS = true;
+
+// Under `layout auto` a text annotation is the one shape allowed to outgrow the
+// fixed size bpmn-auto-layout gives it, because a truncated note is worthless.
+// The cap is the layouter's own grid cell (150 x 140), so a grown note still
+// keeps clear of its neighbours.
+const TEXT_MAX_W = 150;
+const TEXT_MAX_LINES = 6;
 
 interface PortRef {
   port: { id: string; x?: number; y?: number };
@@ -164,6 +184,194 @@ function alignBridgePorts(laid: ElkNode, manualEdges: ManualEdge[]): boolean {
   return changed;
 }
 
+/**
+ * Render auto-layout diagram directly to SVG.
+ * Skips all ELK-specific setup; uses coordinates from bpmn-auto-layout.
+ */
+async function drawAutoLayout(
+  svg: SVGSVGElement,
+  entities: Entity[],
+  resolved: Map<Entity, Resolved>,
+  theme: ReturnType<typeof renderTheme>,
+  id: string,
+): Promise<void> {
+  const { measure, done } = makeMeasurer(svg, 'bpmn-label');
+  const lines = db.getLines();
+  const { root, nodeIds, flowIds, xml } = await autoLayout(entities, lines);
+  setLastBpmnXml(xml);
+
+  // Node ids are the BPMN element ids, so all per-node draw metadata is keyed by
+  // those. Everything ELK needs for routing (ports, regions, lanes) stays empty:
+  // bpmn-auto-layout already produced the final geometry.
+  const types = new Map<string, Entity['type']>();
+  const resolvedById = new Map<string, Resolved>();
+  const activityTypeById = new Map<string, NonNullable<Entity['activityType']>>();
+  const eventOpById = new Map<string, NonNullable<Entity['eventOperation']>>();
+  const dataTypeById = new Map<string, NonNullable<Entity['dataType']>>();
+  const markerSpecsById = new Map<string, string[]>();
+  const labelWidths = new Map<string, number>();
+
+  for (const [nodeId, entity] of nodeIds) {
+    types.set(nodeId, entity.type);
+    const style = resolved.get(entity);
+    if (style) resolvedById.set(nodeId, style);
+    if (entity.activityType) activityTypeById.set(nodeId, entity.activityType);
+    if (entity.eventOperation) eventOpById.set(nodeId, entity.eventOperation);
+    if (entity.dataType) dataTypeById.set(nodeId, entity.dataType);
+
+    const specs = activityMarkerSpecs(entity, entity.children.length === 0);
+    if (specs.length > 0) markerSpecsById.set(nodeId, specs);
+  }
+
+  // Icon specs come from the per-entity `icon` slot plus the activity marker
+  // glyphs, exactly as in the ELK path.
+  const iconSpecs = new Set<string>();
+  for (const style of resolvedById.values()) if (style.icon) iconSpecs.add(style.icon);
+  for (const specs of markerSpecsById.values()) for (const s of specs) iconSpecs.add(s);
+  const icons = iconSpecs.size > 0 ? await resolveIcons(iconSpecs) : new Map<string, IconSvg>();
+
+  const drawCtx: DrawCtx = {
+    types,
+    resolvedById,
+    regionRects: new Map(),
+    laneRects: new Map(),
+    // Pools and lanes are composed as a horizontal stack of bands, so their
+    // captions run down the left edge and the lanes tile the pool top to bottom.
+    // drawNode defaults that axis to 'TB', which would tile them side by side.
+    flowById: new Map(
+      [...nodeIds]
+        .filter(([, entity]) => entity.type === 'pool' || entity.type === 'lane')
+        .map(([nodeId]) => [nodeId, 'LR' as const]),
+    ),
+    eventOpById,
+    activityTypeById,
+    markerSpecsById,
+    dataTypeById,
+    icons,
+    labelWidths,
+    topBandById: new Map(),
+    debugPorts: db.getDebugPorts(),
+    declaredPortIds: new Set(),
+    boundaryInsetById: new Map(),
+    bracketSideById: new Map(),
+    debugBlackBoxIds: new Set(),
+    debugWrapperIds: new Set(),
+  };
+
+  const markers = createMarkers(svg, id, {
+    line: theme.line,
+    background: theme.background,
+  });
+
+  const connStyles = new Map<string, ConnStyle>();
+  for (const [flowId, flow] of flowIds) {
+    // A line touching a data element or a text annotation is an association:
+    // dotted, with an open (line-only) arrowhead. BPMN says the same, but the
+    // transport document carries it as a plain sequence flow, so the domain
+    // model is what decides here.
+    const annotation = (nodeId: string): boolean => {
+      const type = types.get(nodeId);
+      return type === 'data' || type === 'text';
+    };
+    connStyles.set(flowId, {
+      arrow: arrowFor(flow.line.type),
+      invalid: false,
+      text: Boolean(flow.line.label),
+      dataAssoc: annotation(flow.sourceId) || annotation(flow.targetId),
+      messageFlow: flow.messageFlow,
+    });
+  }
+
+  // A gateway's or event's caption sits OUTSIDE its shape, so it can overhang the
+  // laid-out bounding box; the viewBox is grown to keep it visible.
+  let overhangX = 0;
+  let overhangY = 0;
+
+  // Coordinates below the root are parent-relative, so the absolute position
+  // needed for the overhang is threaded down.
+  const fitCaption = (node: ElkNode, ox: number, oy: number): void => {
+    const absX = ox + (node.x ?? 0);
+    const absY = oy + (node.y ?? 0);
+    const entity = nodeIds.get(node.id);
+    const raw = entity ? entityLabel(entity) : '';
+    const type = entity?.type;
+    const isContainer = (node.children?.length ?? 0) > 0;
+
+    if (raw && (type === 'gate' || type === 'event')) {
+      // Centred just below the shape. bpmn-auto-layout lays out left to right, so
+      // below is the edge that stays clear of the flow.
+      const width = measureCaption(raw, measure);
+      const height = captionHeight(raw, LABEL_LINE_H);
+      const x = Math.max(-absX, ((node.width ?? 0) - width) / 2);
+      const y = (node.height ?? 0) + OUTSIDE_LABEL_GAP;
+      node.labels = [{ text: raw, x, y, width, height }];
+      overhangX = Math.max(overhangX, absX + x + width);
+      overhangY = Math.max(overhangY, absY + y + height);
+    } else if (raw && type === 'text') {
+      // A text annotation is a note, so truncating it defeats the point. It is
+      // the one shape allowed to grow past what the layouter gave it, up to the
+      // width of a grid cell, and it grows about its own centre so it stays
+      // where the associations were routed to.
+      const caption = wrapCaption(raw, TEXT_MAX_W - LABEL_PAD_X, measure, TEXT_MAX_LINES);
+      const captionW = measureCaption(caption, measure);
+      const width = Math.max(node.width ?? 0, captionW + LABEL_PAD_X);
+      const height = Math.max(node.height ?? 0, captionHeight(caption, LABEL_LINE_H) + LABEL_PAD_X);
+      node.x = (node.x ?? 0) - (width - (node.width ?? 0)) / 2;
+      node.y = (node.y ?? 0) - (height - (node.height ?? 0)) / 2;
+      node.width = width;
+      node.height = height;
+      node.labels = [{ text: caption }];
+      labelWidths.set(node.id, captionW);
+      overhangX = Math.max(overhangX, ox + node.x + width);
+      overhangY = Math.max(overhangY, oy + node.y + height);
+    } else if (raw && (type === 'lane' || (type === 'pool' && isContainer))) {
+      // A pool with lanes, and every lane, caption a rotated strip down their left
+      // edge, so the caption runs along the band's HEIGHT and is capped by the
+      // strip's width rather than the box's.
+      const maxLines = Math.max(1, Math.floor(POOL_LABEL_BAND / LABEL_LINE_H));
+      const caption = wrapCaption(raw, (node.height ?? 0) - LABEL_PAD_X, measure, maxLines);
+      node.labels = [{ text: caption }];
+      labelWidths.set(node.id, measureCaption(caption, measure));
+    } else if (raw) {
+      // bpmn-auto-layout sizes every shape from fixed constants, so a long caption
+      // cannot grow its box the way it does on the ELK path. It is wrapped into the
+      // box instead, and truncated once it runs out of lines. A container labels
+      // its top band, which is one line tall.
+      const style = resolvedById.get(node.id);
+      const iconSvg = style?.icon ? icons.get(style.icon) : undefined;
+      const iconW = iconSvg ? iconPx(style?.iconSize, ICON_SIZE) + ICON_GAP : 0;
+      const markerBand = markerSpecsById.has(node.id) ? MARKER_BAND : 0;
+      const maxWidth = (node.width ?? 0) - LABEL_PAD_X - iconW;
+      const maxLines = isContainer
+        ? 1
+        : Math.max(1, Math.floor(((node.height ?? 0) - markerBand) / LABEL_LINE_H));
+
+      const caption = wrapCaption(raw, maxWidth, measure, maxLines);
+      node.labels = [{ text: caption }];
+      labelWidths.set(node.id, measureCaption(caption, measure));
+    }
+
+    for (const child of node.children ?? []) fitCaption(child, absX, absY);
+  };
+
+  for (const node of root.children ?? []) {
+    fitCaption(node, 0, 0);
+    drawNode(svg, node, 0, 0, drawCtx);
+  }
+
+  drawEdges(svg, root, 0, 0, connStyles, markers);
+  done();
+
+  const width = Math.max(root.width ?? 0, overhangX + AUTO_PADDING, LEAF_MIN_W);
+  const height = Math.max(root.height ?? 0, overhangY + AUTO_PADDING, LEAF_H);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+}
+
+// Renders straight to the DOM. For ELK layout, elkjs computes geometry;
+// for auto layout, bpmn-auto-layout computes geometry. We own the SVG creation.
+// Mermaid awaits an async draw, so we can await the layout engine's promise here.
 // An `auto` exit/enter side is decided BEFORE layout, from declaration order (see
 // resolveExitSide): whichever branch is written later is assumed to sit later in the
 // flow. ELK reorders siblings freely — a pool stack in particular — so that guess can
@@ -255,18 +463,6 @@ export const renderer = {
 
     const entities = db.getEntities();
     const direction = db.getDirection();
-    // A root that holds pools stacks them ACROSS the diagram flow, exactly as a pool
-    // stacks its lanes: the ELK layout direction toggles (TB↔LR, BT↔RL) while the pools
-    // still inherit the original flow. Layout-only; `direction` (the inherited flow) is
-    // unchanged. Everything downstream that reasons about the ROOT's layout — direction
-    // normalization and the routing engine — must see the toggled value to match ELK.
-    const rootHasPools = entities.some((e) => e.type === 'pool');
-    const rootLayoutDir = rootHasPools ? TOGGLE_AXIS[direction] : direction;
-    const { measure, done } = makeMeasurer(svg, 'bpmn-label');
-
-    // Resolve every entity's fill/outline/icon once (classes, `style`, tint
-    // inheritance, theme fallbacks) up front, since the build pass reads each
-    // entity's icon to reserve room for it. Indexed by node id for the draw pass below.
     const theme = renderTheme();
     const resolved = resolveStyles(
       entities,
@@ -276,6 +472,20 @@ export const renderer = {
       theme,
       db.getRootStyle(),
     );
+
+    // Any previous render's document must not be left behind looking current:
+    // a parse error aside, only the `auto` path below produces one at all.
+    setLastBpmnXml(undefined);
+
+    // For auto-layout, skip all ELK-specific setup
+    if (db.getLayoutAlgorithm() === 'auto') {
+      return drawAutoLayout(svg, entities, resolved, theme, id);
+    }
+
+    // ELK path: full setup follows
+    const rootHasPools = entities.some((e) => e.type === 'pool');
+    const rootLayoutDir = rootHasPools ? TOGGLE_AXIS[direction] : direction;
+    const { measure, done } = makeMeasurer(svg, 'bpmn-label');
 
     const ctx: BuildCtx = {
       measure,
@@ -322,7 +532,12 @@ export const renderer = {
       if (!entity) return null;
       const port = ctx.ports.get(entity);
       if (port) {
-        return { elk: port.portId, owner: port.containerId, isPort: true, side: port.side };
+        return {
+          elk: port.portId,
+          owner: port.containerId,
+          isPort: true,
+          side: port.side,
+        };
       }
       const nodeId = ctx.idOf.get(entity);
       if (!nodeId) return null;
@@ -554,7 +769,7 @@ export const renderer = {
 
       // The exit/enter sides the routing will use, from the same pure helpers planRoute
       // calls — needed here to pin a pool port on the side that faces the other endpoint.
-      const lcaDir = lca === '' ? rootLayoutDir : ctx.dirById.get(lca) ?? rootLayoutDir;
+      const lcaDir = lca === '' ? rootLayoutDir : (ctx.dirById.get(lca) ?? rootLayoutDir);
       const exitSide = resolveExitSide(line.routing?.exit, source.owner, target.owner, lca, lcaDir);
       const enterSide = resolveEnterSide(line.routing?.enter, exitSide);
       const srcRef = poolPortEndpoint(source, connId, 's', exitSide);
@@ -608,7 +823,10 @@ export const renderer = {
       straightEdges,
       debugSeparate,
       autoSides,
-    } = addConnections(graph, routeLines, adapter, rootLayoutDir, separate, { wrapped, wrappers });
+    } = addConnections(graph, routeLines, adapter, rootLayoutDir, separate, {
+      wrapped,
+      wrappers,
+    });
     // INCLUDE_CHILDREN lets ELK route an edge across subtree boundaries, but it forces
     // one flow direction across that node's whole subtree. The engine set both sets
     // explicitly per container — INCLUDE propagated from the root and stopping at each
@@ -653,14 +871,13 @@ export const renderer = {
       }
     }
     // Pools that share a flow direction are stretched to a common length so a stack of
-    // them lines up flush (like a pool's lanes). This needs the laid-out lengths, so it
-    // runs after the first layout and, when it pins any pool, lays out once more — ELK
-    // then re-places each pool's content and re-aligns the stack.
-    if (equalisePoolLengths(laid, ctx)) {
+    // them lines up flush (like a pool's lanes). This optimization only applies to ELK layout.
+    if (db.getLayoutAlgorithm() === 'elk' && equalisePoolLengths(laid, ctx)) {
       laid = await elk.layout(graph);
     }
     // PROTOTYPE: pull wrapper-bridge auto-ports onto their counterpart's axis, then re-lay.
-    if (ALIGN_BRIDGE_PORTS && manualEdges.length > 0) {
+    // This optimization only applies to ELK layout.
+    if (db.getLayoutAlgorithm() === 'elk' && ALIGN_BRIDGE_PORTS && manualEdges.length > 0) {
       if (alignBridgePorts(laid, manualEdges)) laid = await elk.layout(graph);
     }
 
@@ -761,7 +978,12 @@ export const renderer = {
       const cy = p.y + be.anchor.ay;
       drawBoundaryEvent(
         svg,
-        { x: cx - EVENT_SIZE / 2, y: cy - EVENT_SIZE / 2, w: EVENT_SIZE, h: EVENT_SIZE },
+        {
+          x: cx - EVENT_SIZE / 2,
+          y: cy - EVENT_SIZE / 2,
+          w: EVENT_SIZE,
+          h: EVENT_SIZE,
+        },
         be,
         icons,
       );

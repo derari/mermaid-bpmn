@@ -683,12 +683,74 @@ section. When the automatic result isn't what you want, these are the manual
 controls — reach for them only when you need to steer it:
 
 - set the overall or per-container **flow direction**;
+- pick the **layout algorithm**;
 - group boxes together for layout without drawing anything — **regions**;
 - pin the exact point where a line touches a container — **ports**;
 - tune how a line is **routed** when it crosses between containers.
 
 Each is described below; the deeper routing knobs live in
 [docs/routing.md](docs/routing.md).
+
+### Layout algorithm
+
+`layout <algorithm>` picks the engine that positions the diagram. It is a
+standalone statement at the root of the diagram — not a token on the `bpmn`
+header line — and there are two algorithms:
+
+| Algorithm | Engine | Notes |
+| --- | --- | --- |
+| `elk` | [elkjs](https://github.com/kieler/elkjs) | The default. Supports every feature in this document. |
+| `auto` | [bpmn-auto-layout](https://github.com/bpmn-io/bpmn-auto-layout) | A BPMN-native left-to-right layout. |
+
+```
+bpmn
+  layout auto
+  start Received "Order received"
+  task Check "Check stock"
+  gate InStock "In stock?"
+  end Done
+  Received --> Check
+  Check --> InStock
+  InStock --> Done
+```
+
+`auto` serializes the diagram to BPMN 2.0, lets bpmn-auto-layout position it, and
+draws the result with the same shapes and styling as `elk`. It covers
+**activities, gateways and events** (including boundary events attached to their
+host), **expanded sub-processes with their nested contents**, **data objects and
+data stores**, **comments**, **groups and regions** and **pools and lanes**, plus
+the connections between them. Everything else — manual ports, direction modifiers
+and the routing controls below — is ELK-only; a diagram using them should stay on
+the default.
+
+A sequence flow that crosses a sub-process border has no BPMN equivalent — the
+layouter rejects one outright — so under `auto` it is not routed: it is drawn
+**straight** between the two boxes. Connect the sub-process itself instead of one
+of the nodes inside it to get a routed line.
+
+Pools become a BPMN **collaboration**: each pool is a participant with a process
+of its own, lanes become that process's lane set, and a connection that crosses a
+pool border becomes a **message flow**. The layouter places and routes all of it,
+so a cross-lane connection is routed properly rather than drawn straight. Pools
+always run left-to-right under `auto`, whatever the diagram direction says.
+Anything declared outside every pool is laid out in a band of its own underneath,
+without a box around it.
+
+A **group** is drawn from its members: they carry a category reference the
+layouter uses to span a box around them. A group is not a flow node, though, so
+it has no incoming or outgoing connections to route — a line touching one is
+drawn **straight** between the two boxes. The same goes for a line touching a
+pool or a lane.
+
+Because bpmn-auto-layout sizes every shape from fixed constants, a long caption
+does **not** grow its box under `auto`: it is wrapped into the shape and
+truncated with an ellipsis once it runs out of room. Under `elk` the box grows
+instead.
+
+If the layouter cannot find room for a data object, a comment or a group, it
+rejects the whole diagram. `auto` retries without them so the flow itself is
+still laid out; the artifacts are then parked in a row underneath and their
+lines drawn straight.
 
 ### Layout direction
 

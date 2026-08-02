@@ -20,4 +20,8 @@ export const bpmn: ExternalDiagramDefinition = { id, detector, loader };
 // pulled in lazily only when a diagram actually resolves an icon (see icons.ts).
 export { registerIconPacks, type IconPack } from './icons.js';
 
+// The layouted BPMN 2.0 document behind the last render, for a host page that
+// wants to offer it as a download. Only `layout auto` produces one.
+export { getLastBpmnXml } from './lastBpmn.js';
+
 export default bpmn;

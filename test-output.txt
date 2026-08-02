@@ -1,0 +1,31 @@
+
+> mermaid-bpmn@1.1.0 test
+> vitest run test/auto-layout-integration.test.ts
+
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mC:/Users/arian.treffer/IdeaProjects/copilot-worktrees/mermaid-bpmn/arian-treffer-silver-goggles[39m
+
+ [31m❯[39m test/auto-layout-integration.test.ts [2m([22m[2m8 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 909[2mms[22m[39m
+   [33m[2m✓[22m[39m Auto-layout: Non-overlapping tasks (bpmn-auto-layout)[2m > [22mrenders simple task-to-task without overlap [33m459[2mms[22m[39m
+[31m   [31m×[31m Auto-layout: Non-overlapping tasks (bpmn-auto-layout)[2m > [22mrenders both tasks A and B with correct labels[90m 98[2mms[22m[31m[39m
+[31m     → expected [ 'B' ] to include 'A'[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[1m[7m Failed Tests 1 [27m[22m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[31m[1m[7m FAIL [27m[22m[39m test/auto-layout-integration.test.ts[2m > [22mAuto-layout: Non-overlapping tasks (bpmn-auto-layout)[2m > [22mrenders both tasks A and B with correct labels
+[31m[1mAssertionError[22m: expected [ 'B' ] to include 'A'[39m
+[36m [2m❯[22m test/auto-layout-integration.test.ts:[2m167:20[22m[39m
+    [90m165| [39m
+    [90m166| [39m    [35mconst[39m labels [33m=[39m [34mgetTextLabels[39m()[33m;[39m
+    [90m167| [39m    [34mexpect[39m(labels)[33m.[39m[34mtoContain[39m([32m'A'[39m)[33m;[39m
+    [90m   | [39m                   [31m^[39m
+    [90m168| [39m    [34mexpect[39m(labels)[33m.[39m[34mtoContain[39m([32m'B'[39m)[33m;[39m
+    [90m169| [39m    [34mexpect[39m(labels[33m.[39m[34mfilter[39m((l) [33m=>[39m l [33m===[39m [32m'A'[39m))[33m.[39m[34mtoHaveLength[39m([34m1[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m7 passed[39m[22m[90m (8)[39m
+[2m   Start at [22m 15:15:34
+[2m   Duration [22m 4.20s[2m (transform 1.05s, setup 0ms, collect 1.86s, tests 909ms, environment 1ms, prepare 577ms)[22m
+

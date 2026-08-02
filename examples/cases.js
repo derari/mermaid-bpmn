@@ -64,6 +64,7 @@ export const cases = [
   {
     title: 'All gate types',
     code: `bpmn tb
+  layout elk
   region "Standard Syntax" LR
     exclusive gate
     inclusive gate
@@ -119,6 +120,7 @@ export const cases = [
     // events sit loose here rather than on a host activity — not valid BPMN, but
     // it renders the glyphs for the catalogue.
     code: `bpmn tb
+  layout elk
   region "Start Events" lr
     start "Start"
     message start "Message"
@@ -554,6 +556,7 @@ export const cases = [
   {
     title: 'Region: 3 activities, last two in a region tb',
     code: `bpmn
+  layout elk
   task A
   region tb
     task B
@@ -562,8 +565,9 @@ export const cases = [
   B --> C`,
   },
   {
-    title: 'Region: per-region layout direction',
-    code: `bpmn TB
+   title: 'Region: per-region layout direction',
+   code: `bpmn TB
+  layout elk
   region LR
     task Alice
     task Bob
@@ -571,15 +575,17 @@ export const cases = [
     task Carol`,
   },
   {
-    title: 'Region: a styled region at root pads around its children',
-    code: `bpmn TB
+   title: 'Region: a styled region at root pads around its children',
+   code: `bpmn TB
+  layout elk
   region
     style fill:#ffcdd2
     task bob`,
   },
   {
-    title: 'Region: styled regions tile their parent border to border',
-    code: `bpmn TB
+   title: 'Region: styled regions tile their parent border to border',
+   code: `bpmn TB
+  layout elk
   group Service
     region Left LR
       task Alice
@@ -590,8 +596,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Region: extends around nodes, with a cross-boundary line',
-    code: `bpmn TB
+   title: 'Region: extends around nodes, with a cross-boundary line',
+   code: `bpmn TB
+  layout elk
   group Service
     region Left
       task Alice
@@ -604,8 +611,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Region: mixed directions with a cross-region line',
-    code: `bpmn tb
+   title: 'Region: mixed directions with a cross-region line',
+   code: `bpmn tb
+  layout elk
   region lr
     style fill:#ffcdd2
     task alice
@@ -622,6 +630,7 @@ export const cases = [
   {
     title: 'Port: a child wires to its container edge, the port on to a sibling',
     code: `bpmn
+  layout elk
   debug ports
   group Service
     port Out e
@@ -631,8 +640,9 @@ export const cases = [
   Out --> Database`,
   },
   {
-    title: 'Port: named ports on two containers, referenced by absolute lines',
-    code: `bpmn
+   title: 'Port: named ports on two containers, referenced by absolute lines',
+   code: `bpmn
+  layout elk
   debug ports
   group Frontend
     port Send e
@@ -645,8 +655,9 @@ export const cases = [
   Send --- Recv`,
   },
   {
-    title: 'Port: a chain into a nested port bends along the port sides',
-    code: `bpmn
+   title: 'Port: a chain into a nested port bends along the port sides',
+   code: `bpmn
+  layout elk
   debug ports
   task a
   group x
@@ -673,8 +684,9 @@ export const cases = [
   },
   // --- Layout: cross-boundary routing ---------------------------------------
   {
-    title: 'Route: baseline mixed-direction cross line (no route keyword)',
-    code: `bpmn tb
+   title: 'Route: baseline mixed-direction cross line (no route keyword)',
+   code: `bpmn tb
+  layout elk
   debug ports
   region Left lr
     task A
@@ -687,8 +699,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Route: depth:1 — both sides routed via ELK ports (auto exit)',
-    code: `bpmn tb
+   title: 'Route: depth:1 — both sides routed via ELK ports (auto exit)',
+   code: `bpmn tb
+  layout elk
   debug ports
   region Left lr
     task A
@@ -702,8 +715,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Route: exit:n — explicit exit honored literally (loops against geometry)',
-    code: `bpmn tb
+   title: 'Route: exit:n — explicit exit honored literally (loops against geometry)',
+   code: `bpmn tb
+  layout elk
   debug ports
   region Left lr
     task A
@@ -717,8 +731,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Route: depth:0 bend:z — fully hand-routed, HVH',
-    code: `bpmn tb
+   title: 'Route: depth:0 bend:z — fully hand-routed, HVH',
+   code: `bpmn tb
+  layout elk
   debug ports
   region Left lr
     task A
@@ -732,8 +747,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Route: depth:0 bend:n — fully hand-routed, VHV',
-    code: `bpmn tb
+   title: 'Route: depth:0 bend:n — fully hand-routed, VHV',
+   code: `bpmn tb
+  layout elk
   debug ports
   region Left lr
     task A
@@ -747,8 +763,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Route: depth:0 bend:l — single-corner turn, HV/VH from the exit side',
-    code: `bpmn tb
+   title: 'Route: depth:0 bend:l — single-corner turn, HV/VH from the exit side',
+   code: `bpmn tb
+  layout elk
   debug ports
   region Left lr
     task A
@@ -762,8 +779,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Route: bend:auto picks an L when the exit and enter edges meet at 90°',
-    code: `bpmn tb
+   title: 'Route: bend:auto picks an L when the exit and enter edges meet at 90°',
+   code: `bpmn tb
+  layout elk
   debug ports
   region Left lr
     task A
@@ -777,8 +795,9 @@ export const cases = [
   style Right fill:#fff3e0`,
   },
   {
-    title: 'Route: depth:2 — two-level port chain out of nested containers',
-    code: `bpmn tb
+   title: 'Route: depth:2 — two-level port chain out of nested containers',
+   code: `bpmn tb
+  layout elk
   debug ports
   region Outer lr
     catch P
@@ -807,6 +826,7 @@ export const cases = [
   {
     title: 'Route: entity-level route inherited by every line (exit + enter + depth)',
     code: `bpmn tb
+  layout elk
   debug ports
   region Left lr
     route exit:s enter:s depth:1
@@ -847,5 +867,166 @@ task b
 }
   pool P
     task T`,
-  }
+  },
+
+  // --- Layout: auto (no layout engine) -------------------------------------------
+  {
+    title: 'Auto Layout: single activity',
+    code: `bpmn
+  layout auto
+  task Approve`,
+  },
+  {
+    title: 'Auto Layout: multiple activities',
+    code: `bpmn
+  layout auto
+  task A
+  task B
+  task C
+  A --> B
+  B --> C`,
+  },
+  {
+    title: 'Auto Layout: parallel gateways',
+    code: `bpmn
+  layout auto
+  task Start
+  parallel gate fork
+  task Branch1
+  task Branch2
+  parallel gate join
+  task End
+  Start --> fork
+  fork --> Branch1
+  fork --> Branch2
+  Branch1 --> join
+  Branch2 --> join
+  join --> End`,
+  },
+  {
+    title: 'Auto Layout: expanded sub-process',
+    code: `bpmn
+  layout auto
+  subprocess Handle "Process"
+    task A
+    task B
+    A --> B
+  task C
+  Handle --> C`,
+  },
+
+  {
+    title: 'Auto Layout: long labels wrap into the fixed shape',
+    code: `bpmn
+  layout auto
+  task A "Approve the quarterly budget request"
+  task B "Notify"
+  task C "supercalifragilisticexpialidocious"
+  A --> B
+  B --> C`,
+  },
+  {
+    title: 'Auto Layout: boundary event on a task',
+    code: `bpmn
+  layout auto
+  start Begin
+  task Wait "Wait for payment"
+    timer boundary Late "Timeout"
+  task Confirm
+  task Cancel
+  end Done
+  Begin --> Wait
+  Wait --> Confirm
+  Late --> Cancel
+  Confirm --> Done
+  Cancel --> Done`,
+  },
+  {
+    title: 'Auto Layout: data objects and a data store',
+    code: `bpmn
+  layout auto
+  start Begin
+  task Check "Check order"
+  task Ship
+  end Done
+  data Order
+  data store Stock "Stock ledger"
+  Begin --> Check
+  Check --> Ship
+  Ship --> Done
+  Order --> Check
+  Ship --> Stock`,
+  },
+  {
+    title: 'Auto Layout: comments',
+    code: `bpmn
+  layout auto
+  task Review "Review claim"
+  task Pay
+  comment Why "Four eyes required"
+  comment Loose "Not attached to anything"
+  Review --> Pay
+  Review --- Why`,
+  },
+  {
+    title: 'Auto Layout: group',
+    code: `bpmn
+  layout auto
+  start Begin
+  group Back "Back office"
+    task Verify
+    task Book
+  end Done
+  comment Note "Handled off site"
+  Begin --> Verify
+  Verify --> Book
+  Book --> Done
+  Back --- Note`,
+  },
+  {
+    title: 'Auto Layout: pool with lanes',
+    code: `bpmn
+  layout auto
+  pool Order "Order process"
+    lane Sales
+      start Begin "Order received"
+      task Quote "Prepare quote"
+      Begin --> Quote
+    lane Warehouse
+      task Pick
+      task Ship
+      end Done
+      Pick --> Ship
+      Ship --> Done
+  Quote --> Pick`,
+  },
+  {
+    title: 'Auto Layout: two pools',
+    code: `bpmn
+  layout auto
+  pool Buyer
+    lane Purchasing
+      task Order
+      task Receive
+      Order --> Receive
+  pool Seller
+    lane Sales
+      task Confirm
+      task Deliver
+      Confirm --> Deliver
+  Order --> Confirm
+  Deliver --> Receive`,
+  },
+  {
+    title: 'Auto Layout: empty pool and lane',
+    code: `bpmn
+  layout auto
+  pool External "Partner (black box)"
+  pool Internal
+    lane Idle
+    lane Working
+      task Work
+        --> External
+        External -->`,
+  },
 ];
