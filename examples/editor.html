@@ -289,6 +289,7 @@
           <li><button id="download-bpmn" type="button">BPMN</button></li>
         </ul>
       </div>
+      <button id="open-svg" class="theme-toggle" type="button">Open SVG</button>
       <button id="theme-toggle" class="theme-toggle" type="button">🌙 Dark</button>
     </header>
     <main>
@@ -334,6 +335,7 @@
     <script type="module">
       import mermaid from 'mermaid';
       import bpmn, { registerIconPacks, getLastBpmnXml, importBpmnXml } from '../src/index.ts';
+      import { createOpenSvgClickHandler } from './open-svg.ts';
 
       mermaid.registerExternalDiagrams([bpmn]);
       // Icons: register the Iconify packs the `icon:` style prop can draw from.
@@ -685,6 +687,7 @@ pool Pool (White Box) :::bg-pool
         openMenu(false);
         downloadBpmn();
       });
+      document.getElementById('open-svg').addEventListener('click', createOpenSvgClickHandler(serializeSvg, output));
 
       // Import: a modal with a drop zone / file picker for a .bpmn file, and a
       // switch for which block style the generated source should use. The preview
