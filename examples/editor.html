@@ -75,6 +75,16 @@
       .theme-toggle:hover {
         border-color: var(--faint);
       }
+      .pane-width {
+        align-self: center;
+        display: flex;
+        gap: 0.25rem;
+      }
+      .pane-width [aria-pressed='true'] {
+        border-color: var(--fg);
+        background: var(--fg);
+        color: var(--bg);
+      }
       /* Import + download sit at the right end of the header; the first of them
          carries the margin-left:auto that pushes the group over. */
       #import-open {
@@ -125,15 +135,19 @@
         background: transparent;
       }
       main {
+        --source-pane-width: 30%;
         flex: 1;
         display: flex;
         min-height: 0;
       }
       .pane {
-        flex: 1 1 50%;
+        flex: 1 1 0;
         min-width: 0;
         display: flex;
         flex-direction: column;
+      }
+      .pane:first-child {
+        flex: 0 0 var(--source-pane-width);
       }
       .pane + .pane {
         border-left: 1px solid var(--border);
@@ -150,6 +164,7 @@
         flex: 1;
         border: 0;
         resize: none;
+        overflow: auto;
         padding: 0.75rem 1rem;
         background: var(--bg);
         color: var(--fg);
@@ -290,11 +305,15 @@
         </ul>
       </div>
       <button id="theme-toggle" class="theme-toggle" type="button">🌙 Dark</button>
+      <div class="pane-width" aria-label="Source pane width" role="group">
+        <button class="theme-toggle" type="button" data-source-pane-width="50%" aria-pressed="false">50%</button>
+        <button class="theme-toggle" type="button" data-source-pane-width="30%" aria-pressed="true">30%</button>
+      </div>
     </header>
     <main>
       <section class="pane">
         <div class="label">BPMN source</div>
-        <textarea id="source" spellcheck="false"></textarea>
+        <textarea id="source" spellcheck="false" wrap="off"></textarea>
       </section>
       <section class="pane">
         <div class="label">Rendered output</div>
@@ -334,6 +353,7 @@
     <script type="module">
       import mermaid from 'mermaid';
       import bpmn, { registerIconPacks, getLastBpmnXml, importBpmnXml } from '../src/index.ts';
+      import { initializeEditorPaneWidth } from './editor-pane-width.ts';
 
       mermaid.registerExternalDiagrams([bpmn]);
       // Icons: register the Iconify packs the `icon:` style prop can draw from.
@@ -515,6 +535,13 @@ pool Pool (White Box) :::bg-pool
 
       const source = document.getElementById('source');
       const output = document.getElementById('output');
+      const main = document.querySelector('main');
+      const paneWidthControls = document.querySelectorAll('[data-source-pane-width]');
+
+      if (main instanceof HTMLElement) {
+        initializeEditorPaneWidth(main, paneWidthControls);
+      }
+
       source.value = EXAMPLE;
 
       let seq = 0;
