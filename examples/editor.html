@@ -75,6 +75,16 @@
       .theme-toggle:hover {
         border-color: var(--faint);
       }
+      .pane-width {
+        align-self: center;
+        display: flex;
+        gap: 0.25rem;
+      }
+      .pane-width [aria-pressed='true'] {
+        border-color: var(--fg);
+        background: var(--fg);
+        color: var(--bg);
+      }
       /* Import + download sit at the right end of the header; the first of them
          carries the margin-left:auto that pushes the group over. */
       #import-open {
@@ -125,15 +135,19 @@
         background: transparent;
       }
       main {
+        --source-pane-width: 30%;
         flex: 1;
         display: flex;
         min-height: 0;
       }
       .pane {
-        flex: 1 1 50%;
+        flex: 1 1 0;
         min-width: 0;
         display: flex;
         flex-direction: column;
+      }
+      .pane:first-child {
+        flex: 0 0 var(--source-pane-width);
       }
       .pane + .pane {
         border-left: 1px solid var(--border);
@@ -150,6 +164,7 @@
         flex: 1;
         border: 0;
         resize: none;
+        overflow: auto;
         padding: 0.75rem 1rem;
         background: var(--bg);
         color: var(--fg);
@@ -160,16 +175,25 @@
         outline: none;
       }
       #output {
+        position: relative;
         flex: 1;
-        overflow: auto;
+        min-height: 0;
+        min-width: 0;
+        overflow: hidden;
         padding: 1rem;
         display: flex;
-        align-items: flex-start;
+        align-items: stretch;
         justify-content: center;
       }
-      #output svg {
-        max-width: 100%;
-        height: auto;
+      #output > svg {
+        display: block;
+        flex-shrink: 0;
+        overflow: hidden;
+      }
+      #output > .error {
+        flex: 1;
+        min-width: 0;
+        overflow: auto;
       }
       .error {
         color: var(--error);
@@ -289,12 +313,17 @@
           <li><button id="download-bpmn" type="button">BPMN</button></li>
         </ul>
       </div>
+      <button id="open-svg" class="theme-toggle" type="button">Open SVG</button>
       <button id="theme-toggle" class="theme-toggle" type="button">🌙 Dark</button>
+      <div class="pane-width" aria-label="Source pane width" role="group">
+        <button class="theme-toggle" type="button" data-source-pane-width="50%" aria-pressed="false">50%</button>
+        <button class="theme-toggle" type="button" data-source-pane-width="30%" aria-pressed="true">30%</button>
+      </div>
     </header>
     <main>
       <section class="pane">
         <div class="label">BPMN source</div>
-        <textarea id="source" spellcheck="false"></textarea>
+        <textarea id="source" spellcheck="false" wrap="off"></textarea>
       </section>
       <section class="pane">
         <div class="label">Rendered output</div>
@@ -334,6 +363,9 @@
     <script type="module">
       import mermaid from 'mermaid';
       import bpmn, { registerIconPacks, getLastBpmnXml, importBpmnXml } from '../src/index.ts';
+      import { initializeEditorPaneWidth } from './editor-pane-width.ts';
+      import { createEditorSVGPreview } from './editor-svg-preview.ts';
+      import { createOpenSvgClickHandler } from './open-svg.ts';
 
       mermaid.registerExternalDiagrams([bpmn]);
       // Icons: register the Iconify packs the `icon:` style prop can draw from.
@@ -515,6 +547,14 @@ pool Pool (White Box) :::bg-pool
 
       const source = document.getElementById('source');
       const output = document.getElementById('output');
+      const preview = createEditorSVGPreview(output);
+      const main = document.querySelector('main');
+      const paneWidthControls = document.querySelectorAll('[data-source-pane-width]');
+
+      if (main instanceof HTMLElement) {
+        initializeEditorPaneWidth(main, paneWidthControls);
+      }
+
       source.value = EXAMPLE;
 
       let seq = 0;
@@ -523,9 +563,10 @@ pool Pool (White Box) :::bg-pool
         const id = `bpmn-editor-${seq++}`;
         try {
           const { svg } = await mermaid.render(id, source.value);
-          output.innerHTML = svg;
+          preview.show(svg);
           lastRenderOk = true;
         } catch (err) {
+          preview.clear();
           output.innerHTML = `<div class="error">${String(
             err && err.stack ? err.stack : err,
           )}</div>`;
@@ -557,7 +598,7 @@ pool Pool (White Box) :::bg-pool
       toggle.addEventListener('click', () => setTheme(theme === 'dark' ? 'light' : 'dark'));
 
       // Download: the button drops down to SVG / PNG / BPMN. SVG and PNG work off
-      // whatever SVG is currently in the output pane, so a diagram must be
+      // the clean copy of the current diagram, so a diagram must be
       // rendered first. BPMN comes from the layouter instead, and only the `auto`
       // layout produces one.
       const downloadToggle = document.getElementById('download-toggle');
@@ -571,11 +612,8 @@ pool Pool (White Box) :::bg-pool
         e.stopPropagation();
         openMenu(downloadMenu.hidden);
       });
-      // Click outside or Escape closes the menu.
+      // Click outside closes the menu; Escape is handled with the import dialog below.
       document.addEventListener('click', () => openMenu(false));
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') openMenu(false);
-      });
 
       function triggerDownload(blob, filename) {
         const url = URL.createObjectURL(blob);
@@ -587,40 +625,8 @@ pool Pool (White Box) :::bg-pool
         setTimeout(() => URL.revokeObjectURL(url), 0);
       }
 
-      // Returns a standalone clone of the rendered SVG with an explicit width/height
-      // (mermaid sizes via a max-width style, which a bare download/canvas ignores)
-      // and the xmlns declaration a detached file needs. Returns null if nothing is
-      // rendered yet. `dims` is filled with the pixel size for the caller.
-      function serializeSvg(dims) {
-        const svg = output.querySelector('svg');
-        if (!svg) return null;
-        const clone = svg.cloneNode(true);
-
-        // Work out intrinsic pixel size: prefer the viewBox, fall back to the
-        // rendered bounding box.
-        let width, height;
-        const vb = svg.viewBox && svg.viewBox.baseVal;
-        if (vb && vb.width && vb.height) {
-          width = vb.width;
-          height = vb.height;
-        } else {
-          const rect = svg.getBoundingClientRect();
-          width = rect.width;
-          height = rect.height;
-        }
-        clone.setAttribute('width', width);
-        clone.setAttribute('height', height);
-        clone.style.maxWidth = '';
-        clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-        clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
-
-        dims.width = width;
-        dims.height = height;
-        return new XMLSerializer().serializeToString(clone);
-      }
-
       function downloadSvg() {
-        const markup = serializeSvg({});
+        const markup = preview.serialize({});
         if (!markup) return;
         triggerDownload(
           new Blob([markup], { type: 'image/svg+xml;charset=utf-8' }),
@@ -634,7 +640,7 @@ pool Pool (White Box) :::bg-pool
       // transparent.
       function downloadPng() {
         const dims = {};
-        const markup = serializeSvg(dims);
+        const markup = preview.serialize(dims);
         if (!markup) return;
         const scale = 2;
         const img = new Image();
@@ -656,6 +662,7 @@ pool Pool (White Box) :::bg-pool
         };
         img.onerror = () => {
           URL.revokeObjectURL(svgUrl);
+          preview.clear();
           output.innerHTML = `<div class="error">Could not rasterize the diagram to PNG.</div>`;
         };
         img.src = svgUrl;
@@ -685,6 +692,7 @@ pool Pool (White Box) :::bg-pool
         openMenu(false);
         downloadBpmn();
       });
+      document.getElementById('open-svg').addEventListener('click', createOpenSvgClickHandler(preview.serialize, output, preview.clear));
 
       // Import: a modal with a drop zone / file picker for a .bpmn file, and a
       // switch for which block style the generated source should use. The preview
@@ -752,7 +760,14 @@ pool Pool (White Box) :::bg-pool
         if (e.target === importBackdrop) openImport(false);
       });
       document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !importBackdrop.hidden) openImport(false);
+        if (e.key !== 'Escape') return;
+        if (!importBackdrop.hidden) {
+          openImport(false);
+        } else if (!downloadMenu.hidden) {
+          openMenu(false);
+        } else {
+          preview.handleEscape();
+        }
       });
 
       importSelect.addEventListener('click', () => importInput.click());

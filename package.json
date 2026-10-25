@@ -57,6 +57,7 @@
     "@iconify/types": "^2.0.0",
     "@types/node": "^22",
     "mermaid": "^11",
+    "svg-pan-zoom": "3.6.2",
     "tsup": "^8",
     "typescript": "^5",
     "vite": "^5",
