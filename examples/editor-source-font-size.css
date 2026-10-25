@@ -1,0 +1,52 @@
+.pane > .source-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-block: 0.2rem;
+}
+
+.source-font-controls {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.125rem;
+}
+
+.source-font-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.25rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+.source-font-controls button:not(:disabled):hover {
+  border-color: var(--border);
+  background: var(--panel-bg);
+}
+
+.source-font-controls button:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 1px;
+}
+
+.source-font-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.source-font-controls .reset-icon {
+  width: 1rem;
+  height: 1rem;
+  background-color: currentColor;
+  -webkit-mask: url('./icons/reset.svg') center / contain no-repeat;
+  mask: url('./icons/reset.svg') center / contain no-repeat;
+}
